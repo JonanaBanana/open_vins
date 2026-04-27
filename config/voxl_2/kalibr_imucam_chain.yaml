@@ -1,0 +1,14 @@
+%YAML:1.0
+cam0:
+  T_cam_imu:
+      - [ 1.0, 0.0, 0.0,  0.0]
+      - [ 0.0, 1.0, 0.0,  0.0]
+      - [ 0.0, 0.0, 1.0,  0.0]
+      - [ 0.0, 0.0, 0.0,  1.0]
+  camera_model: equidistant
+  distortion_coeffs: [6.3196497080836120e-02, 6.1335750392641853e-03, 6.6392451051821098e-03, -4.3786375972630171e-03]
+  distortion_model: equidistant
+  intrinsics: [4.6623259900741300e+02, 4.6591852811669406e+02, 6.5291666509233187e+02, 4.0895917018296109e+02]
+  resolution: [1280, 800]
+  rostopic: /tracking_down_misp_decoded
+  timeshift_cam_imu: 0.0
