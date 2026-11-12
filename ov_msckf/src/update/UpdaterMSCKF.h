@@ -27,12 +27,17 @@
 
 #include "feat/FeatureInitializerOptions.h"
 
+#include "RangePlane.h"
 #include "UpdaterOptions.h"
 
 namespace ov_core {
 class Feature;
 class FeatureInitializer;
 } // namespace ov_core
+
+namespace ov_type {
+class Type;
+} // namespace ov_type
 
 namespace ov_msckf {
 
@@ -67,7 +72,50 @@ public:
    */
   void update(std::shared_ptr<State> state, std::vector<std::shared_ptr<ov_core::Feature>> &feature_vec);
 
+  /**
+   * @brief GeoTNav: enable the rangefinder plane constraint.
+   *
+   * Each feature that passes the (visual) chi2 test gets one more row before it is projected out: the
+   * rangefinder's slant range at the newest clone it is seen from, predicted as the distance along the
+   * beam to the horizontal plane through the feature, (p_I,z - p_F,z) / cos(tilt). That ties the
+   * features' depths, and so the scale, to a metric height.
+   */
+  void set_range(std::shared_ptr<RangeBuffer> buffer, const RangeOptions &options) {
+    _range_buffer = buffer;
+    _range_options = options;
+  }
+
+  /// GeoTNav: how the last update's features fared (for the per-frame [TRACK] log line)
+  struct Stats {
+    int in = 0;            // features offered with at least two measurements
+    int triangulated = 0;  // of those, triangulated and refined
+    int used = 0;          // of those, passed the chi2 test and went into the update
+  };
+  Stats last_stats;
+
 protected:
+  /**
+   * @brief GeoTNav: append the range row to a feature's (unprojected) system; false if no valid range.
+   *
+   * Only for GLOBAL_3D features (H_f's columns are p_FinG). The row is whitened to the pixel noise,
+   * with a Huber weight beyond huber_k sigmas.
+   */
+  bool append_range_row(std::shared_ptr<State> state, const std::shared_ptr<ov_core::Feature> &feature, Eigen::MatrixXd &H_f,
+                        Eigen::MatrixXd &H_x, Eigen::VectorXd &res, const std::vector<std::shared_ptr<ov_type::Type>> &Hx_order);
+
+  /// GeoTNav: rangefinder readings (null: the constraint is off) and options
+  std::shared_ptr<RangeBuffer> _range_buffer;
+  RangeOptions _range_options;
+
+  /// GeoTNav: statistics of the range rows, logged periodically
+  long _range_rows = 0;
+  long _range_huber = 0;
+  long _range_missing = 0;
+  double _range_res_sum = 0.0;
+  double _range_res_sq = 0.0;
+  double _range_bin_sum[4] = {0, 0, 0, 0};  // whole run, by tilt
+  long _range_bin_n[4] = {0, 0, 0, 0};
+
   /// Options used during update
   UpdaterOptions _options;
 

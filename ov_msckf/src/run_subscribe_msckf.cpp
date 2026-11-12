@@ -113,10 +113,20 @@ int main(int argc, char **argv) {
 #endif
 
   // Final visualization
+#if ROS_AVAILABLE == 2
+  viz->stop();
+#endif
   viz->visualize_final();
 #if ROS_AVAILABLE == 1
   ros::shutdown();
 #elif ROS_AVAILABLE == 2
+  // GeoTNav: destroy the publishers and subscriptions (held by viz and the parser) before shutdown;
+  // as globals they were destroyed after DDS at exit: "Failed to delete datawriter", then a segfault
+  executor.remove_node(node);
+  viz.reset();
+  sys.reset();
+  parser.reset();
+  node.reset();
   rclcpp::shutdown();
 #endif
 

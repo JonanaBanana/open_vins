@@ -81,6 +81,16 @@ public:
   void feed_measurement_camera(const ov_core::CameraData &message) { track_image_and_update(message); }
 
   /**
+   * @brief GeoTNav: feed function for a downward rangefinder (used by the plane constraint if enabled)
+   * @param timestamp Time of the reading, in the IMU clock
+   * @param range Slant range along the beam [m]; invalid readings are kept as gaps
+   */
+  void feed_measurement_range(double timestamp, double range) {
+    if (range_buffer != nullptr)
+      range_buffer->feed(timestamp, range);
+  }
+
+  /**
    * @brief Feed function for a synchronized simulated cameras
    * @param timestamp Time that this image was collected
    * @param camids Camera ids that we have simulated measurements for
@@ -199,6 +209,9 @@ protected:
 
   /// Our MSCKF feature updater
   std::shared_ptr<UpdaterMSCKF> updaterMSCKF;
+
+  /// GeoTNav: rangefinder readings for the plane constraint (null if it is off)
+  std::shared_ptr<RangeBuffer> range_buffer;
 
   /// Our SLAM/ARUCO feature updater
   std::shared_ptr<UpdaterSLAM> updaterSLAM;

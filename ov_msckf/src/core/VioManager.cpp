@@ -153,6 +153,10 @@ VioManager::VioManager(VioManagerOptions &params_) : thread_init_running(false),
 
   // Make the updater!
   updaterMSCKF = std::make_shared<UpdaterMSCKF>(params.msckf_options, params.featinit_options);
+  if (params.range_options.enabled) {
+    range_buffer = std::make_shared<RangeBuffer>(params.range_options);
+    updaterMSCKF->set_range(range_buffer, params.range_options);
+  }
   updaterSLAM = std::make_shared<UpdaterSLAM>(params.slam_options, params.aruco_options, params.featinit_options);
 
   // If we are using zero velocity updates, then create the updater
@@ -522,9 +526,24 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
   // NOTE: this should only really be used if you want to track a lot of features, or have limited computational resources
   if ((int)featsup_MSCKF.size() > state->_options.max_msckf_in_update)
     featsup_MSCKF.erase(featsup_MSCKF.begin(), featsup_MSCKF.end() - state->_options.max_msckf_in_update);
+  const int msckf_offered = (int)featsup_MSCKF.size();
   updaterMSCKF->update(state, featsup_MSCKF);
   propagator->invalidate_cache();
   rT4 = boost::posix_time::microsec_clock::local_time();
+
+  // GeoTNav: one line per frame on how vision is doing, to see when updates thin out or go wrong
+  // (fast rotation, blur): tracks in the current image, features offered to the MSCKF update and how
+  // many survive triangulation and the chi2 test, SLAM features, and the speed estimate.
+  {
+    int tracked = 0;
+    for (const auto &cam : trackFEATS->get_last_obs()) {
+      tracked += (int)cam.second.size();
+    }
+    const auto &s = updaterMSCKF->last_stats;
+    PRINT_INFO("[TRACK] t %.3f tracked %d | msckf offered %d valid %d triangulated %d used %d | slam %d | speed %.2f m/s\n",
+               state->_timestamp, tracked, msckf_offered, s.in, s.triangulated, s.used, (int)state->_features_SLAM.size(),
+               state->_imu->vel().norm());
+  }
 
   // Perform SLAM delay init and update
   // NOTE: that we provide the option here to do a *sequential* update

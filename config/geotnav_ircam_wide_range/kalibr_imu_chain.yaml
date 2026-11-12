@@ -1,0 +1,43 @@
+%YAML:1.0
+# /imu_apps, the VOXL 2's IMU (TDK ICM-42688-P), in base_link (FLU): its x, y, z follow PX4's
+# FRD body rates x, -y, -z (checked on voxlbag_oct23_mission_1_timefixed), and it reads +g on z.
+# The noises are the vibration measured in flight (voxlbag_oct23_mission_1_timefixed, the signal
+# minus its 0.2 s mean, sigma / sqrt(rate)): gyro 0.002-0.008 rad/s/sqrt(Hz), accel
+# 0.05-0.3 m/s^2/sqrt(Hz), 20-40x the datasheet (gyro 2.8 mdps/sqrt(Hz), accel 70 ug/sqrt(Hz)).
+# The images do not show the gyro's frame-to-frame swings; over 10+ frames they agree. The random
+# walks are guesses.
+
+imu0:
+  T_i_b:
+    - [1.0, 0.0, 0.0, 0.0]
+    - [0.0, 1.0, 0.0, 0.0]
+    - [0.0, 0.0, 1.0, 0.0]
+    - [0.0, 0.0, 0.0, 1.0]
+  accelerometer_noise_density: 2.0e-1  # [ m / s^2 / sqrt(Hz) ]
+  accelerometer_random_walk: 5.0e-3    # [ m / s^3 / sqrt(Hz) ]
+  gyroscope_noise_density: 8.0e-3      # [ rad / s / sqrt(Hz) ]
+  gyroscope_random_walk: 1.0e-4        # [ rad / s^2 / sqrt(Hz) ]
+  rostopic: /imu_apps
+  time_offset: 0.0
+  update_rate: 400.0  # on average; it arrives in bursts at ~1 kHz
+  model: "kalibr"
+  Tw:
+    - [ 1.0, 0.0, 0.0 ]
+    - [ 0.0, 1.0, 0.0 ]
+    - [ 0.0, 0.0, 1.0 ]
+  R_IMUtoGYRO:
+    - [ 1.0, 0.0, 0.0 ]
+    - [ 0.0, 1.0, 0.0 ]
+    - [ 0.0, 0.0, 1.0 ]
+  Ta:
+    - [ 1.0, 0.0, 0.0 ]
+    - [ 0.0, 1.0, 0.0 ]
+    - [ 0.0, 0.0, 1.0 ]
+  R_IMUtoACC:
+    - [ 1.0, 0.0, 0.0 ]
+    - [ 0.0, 1.0, 0.0 ]
+    - [ 0.0, 0.0, 1.0 ]
+  Tg:
+    - [ 0.0, 0.0, 0.0 ]
+    - [ 0.0, 0.0, 0.0 ]
+    - [ 0.0, 0.0, 0.0 ]

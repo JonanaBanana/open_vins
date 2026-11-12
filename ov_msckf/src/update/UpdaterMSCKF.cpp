@@ -28,6 +28,7 @@
 #include "state/State.h"
 #include "state/StateHelper.h"
 #include "types/LandmarkRepresentation.h"
+#include "types/PoseJPL.h"
 #include "utils/colors.h"
 #include "utils/print.h"
 #include "utils/quat_ops.h"
@@ -56,6 +57,8 @@ UpdaterMSCKF::UpdaterMSCKF(UpdaterOptions &options, ov_core::FeatureInitializerO
 }
 
 void UpdaterMSCKF::update(std::shared_ptr<State> state, std::vector<std::shared_ptr<Feature>> &feature_vec) {
+
+  last_stats = Stats();
 
   // Return if no features
   if (feature_vec.empty())
@@ -93,6 +96,7 @@ void UpdaterMSCKF::update(std::shared_ptr<State> state, std::vector<std::shared_
     }
   }
   rT1 = boost::posix_time::microsec_clock::local_time();
+  last_stats.in = (int)feature_vec.size();
 
   // 2. Create vector of cloned *CAMERA* poses at each of our clone timesteps
   std::unordered_map<size_t, std::unordered_map<double, FeatureInitializer::ClonePose>> clones_cam;
@@ -141,6 +145,7 @@ void UpdaterMSCKF::update(std::shared_ptr<State> state, std::vector<std::shared_
     it1++;
   }
   rT2 = boost::posix_time::microsec_clock::local_time();
+  last_stats.triangulated = (int)feature_vec.size();
 
   // Calculate the max possible measurement size
   size_t max_meas_size = 0;
@@ -202,6 +207,18 @@ void UpdaterMSCKF::update(std::shared_ptr<State> state, std::vector<std::shared_
     // Get the Jacobian for this feature
     UpdaterHelper::get_feature_jacobian_full(state, feat, H_f, H_x, res, Hx_order);
 
+    // GeoTNav: keep the unprojected system for the range row, which is added only after the visual rows
+    // pass the chi2 test below (so a wrong scale cannot make every feature fail it).
+    const bool use_range =
+        _range_buffer != nullptr && feat.feat_representation == LandmarkRepresentation::Representation::GLOBAL_3D;
+    Eigen::MatrixXd H_f_full, H_x_full;
+    Eigen::VectorXd res_full;
+    if (use_range) {
+      H_f_full = H_f;
+      H_x_full = H_x;
+      res_full = res;
+    }
+
     // Nullspace project
     UpdaterHelper::nullspace_project_inplace(H_f, H_x, res);
 
@@ -233,6 +250,13 @@ void UpdaterMSCKF::update(std::shared_ptr<State> state, std::vector<std::shared_
       continue;
     }
 
+    // GeoTNav: the visual rows passed; add the range row and project the feature out of all of them.
+    if (use_range && append_range_row(state, *it2, H_f_full, H_x_full, res_full, Hx_order)) {
+      UpdaterHelper::nullspace_project_inplace(H_f_full, H_x_full, res_full);
+      H_x = H_x_full;
+      res = res_full;
+    }
+
     // We are good!!! Append to our large H vector
     size_t ct_hx = 0;
     for (const auto &var : Hx_order) {
@@ -255,6 +279,7 @@ void UpdaterMSCKF::update(std::shared_ptr<State> state, std::vector<std::shared_
     it2++;
   }
   rT3 = boost::posix_time::microsec_clock::local_time();
+  last_stats.used = (int)feature_vec.size();
 
   // We have appended all features to our Hx_big, res_big
   // Delete it so we do not reuse information
@@ -292,4 +317,106 @@ void UpdaterMSCKF::update(std::shared_ptr<State> state, std::vector<std::shared_
   PRINT_ALL("[MSCKF-UP]: %.4f seconds compress system\n", (rT4 - rT3).total_microseconds() * 1e-6);
   PRINT_ALL("[MSCKF-UP]: %.4f seconds update state (%d size)\n", (rT5 - rT4).total_microseconds() * 1e-6, (int)res_big.rows());
   PRINT_ALL("[MSCKF-UP]: %.4f seconds total\n", (rT5 - rT1).total_microseconds() * 1e-6);
+}
+
+bool UpdaterMSCKF::append_range_row(std::shared_ptr<State> state, const std::shared_ptr<Feature> &feature, Eigen::MatrixXd &H_f,
+                                    Eigen::MatrixXd &H_x, Eigen::VectorXd &res, const std::vector<std::shared_ptr<Type>> &Hx_order) {
+
+  // The newest clone the feature is seen from that has a valid range (clones are at camera times; the
+  // ranges are stamped in the IMU clock).
+  std::vector<double> times;
+  for (const auto &pair : feature->timestamps) {
+    times.insert(times.end(), pair.second.begin(), pair.second.end());
+  }
+  std::sort(times.rbegin(), times.rend());
+  const double dt_cam_to_imu = state->_calib_dt_CAMtoIMU->value()(0);
+  double range = 0.0;
+  double clone_time = -1.0;
+  for (double t : times) {
+    if (state->_clones_IMU.find(t) != state->_clones_IMU.end() && _range_buffer->get(t + dt_cam_to_imu, range)) {
+      clone_time = t;
+      break;
+    }
+  }
+  if (clone_time < 0) {
+    _range_missing++;
+    return false;
+  }
+  std::shared_ptr<PoseJPL> clone = state->_clones_IMU.at(clone_time);
+
+  // The clone's columns in H_x: orientation (3) then position (3).
+  size_t col = 0;
+  bool found = false;
+  for (const auto &var : Hx_order) {
+    if (var.get() == clone.get()) {
+      found = true;
+      break;
+    }
+    col += var->size();
+  }
+  if (!found) {
+    return false;
+  }
+
+  // Beam in the global frame (z up): b = R_GtoI^T d, so b_z = d . (R_GtoI e_z). The predicted slant range
+  // to the horizontal plane through the feature is (p_I,z - p_F,z) / -b_z.
+  const Eigen::Vector3d &d = _range_options.dir_in_imu;
+  const Eigen::Vector3d &p_F = feature->p_FinG;
+  const double b_z = d.dot(clone->Rot().col(2));
+  const double height = clone->pos()(2) - p_F(2);
+  if (-b_z < std::cos(_range_options.max_tilt_deg * M_PI / 180.0) || height <= 0.0 ||
+      range * -b_z < _range_options.min_height) {
+    return false;
+  }
+  const double residual = range - height / -b_z;
+
+  // Jacobians at the linearisation point (first estimates, as the visual rows). With
+  // R_GtoI = (I - [dtheta]x) R_hat: d b_z / d dtheta = d^T [R_hat e_z]x, and h = -H / b_z.
+  const Eigen::Matrix3d R_lin = state->_options.do_fej ? clone->Rot_fej() : clone->Rot();
+  const Eigen::Vector3d p_lin = state->_options.do_fej ? clone->pos_fej() : clone->pos();
+  const double b_z_lin = d.dot(R_lin.col(2));
+  const double height_lin = p_lin(2) - p_F(2);
+  const Eigen::RowVector3d dh_dtheta = (height_lin / (b_z_lin * b_z_lin)) * d.transpose() * skew_x(R_lin.col(2));
+  const double dh_dpz = -1.0 / b_z_lin;
+  const double dh_dpfz = 1.0 / b_z_lin;
+
+  // Whiten to the pixel noise the rest of the update assumes; Huber weight beyond huber_k sigmas.
+  double sigma = _range_options.sigma;
+  if (std::abs(residual) > _range_options.huber_k * sigma) {
+    sigma = std::abs(residual) / _range_options.huber_k;
+    _range_huber++;
+  }
+  const double w = _options.sigma_pix / sigma;
+
+  const Eigen::Index n = H_x.rows();
+  H_x.conservativeResize(n + 1, Eigen::NoChange);
+  H_x.row(n).setZero();
+  H_x.block(n, col, 1, 3) = w * dh_dtheta;
+  H_x(n, col + 5) = w * dh_dpz;
+  H_f.conservativeResize(n + 1, Eigen::NoChange);
+  H_f.row(n).setZero();
+  H_f(n, 2) = w * dh_dpfz;
+  res.conservativeResize(n + 1);
+  res(n) = w * residual;
+
+  _range_rows++;
+  _range_res_sum += residual;
+  _range_res_sq += residual * residual;
+  // By tilt (<10, 10-20, 20-30, >=30 deg): a plane rotated wrongly would show as a residual that changes
+  // systematically with the tilt.
+  const int bin = std::min(3, (int)(std::acos(-b_z) * 180.0 / M_PI / 10.0));
+  _range_bin_sum[bin] += residual;
+  _range_bin_n[bin]++;
+  if (_range_rows % 5000 == 0) {
+    const double mean = _range_res_sum / 5000.0;
+    PRINT_INFO("[RANGE] %ld rows: residual mean %+.2f m, rms %.2f m over the last 5000; Huber %.1f %%, no range %ld; "
+               "mean by tilt <10/10-20/20-30/30+ deg: %+.2f %+.2f %+.2f %+.2f m (%ld %ld %ld %ld rows in all)\n",
+               _range_rows, mean, std::sqrt(_range_res_sq / 5000.0), 100.0 * _range_huber / _range_rows, _range_missing,
+               _range_bin_sum[0] / std::max(1L, _range_bin_n[0]), _range_bin_sum[1] / std::max(1L, _range_bin_n[1]),
+               _range_bin_sum[2] / std::max(1L, _range_bin_n[2]), _range_bin_sum[3] / std::max(1L, _range_bin_n[3]), _range_bin_n[0],
+               _range_bin_n[1], _range_bin_n[2], _range_bin_n[3]);
+    _range_res_sum = 0.0;
+    _range_res_sq = 0.0;
+  }
+  return true;
 }

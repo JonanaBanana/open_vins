@@ -121,7 +121,20 @@ bool StaticInitializer::initialize(double &timestamp, Eigen::MatrixXd &covarianc
   // Get rotation with z axis aligned with -g (z_in_G=0,0,1)
   Eigen::Vector3d z_axis = a_avg_2to1 / a_avg_2to1.norm();
   Eigen::Matrix3d Ro;
-  InitializerHelper::gram_schmidt(z_axis, Ro);
+  // GeoTNav: the global x axis is the IMU's x axis (the drone's forward) made horizontal, so the global
+  // frame's yaw is the drone's heading when it initialises, which an init heading can give. Gram-Schmidt
+  // below picks x from gravity alone (the IMU's y or -x, whichever accelerometer axis is less vertical),
+  // which is effectively random between flights; it stays as the fallback if x were nearly vertical.
+  const Eigen::Vector3d e_1(1.0, 0.0, 0.0);
+  const Eigen::Vector3d x_horizontal = e_1 - z_axis * z_axis.dot(e_1);
+  if (x_horizontal.norm() > 0.3) {
+    const Eigen::Vector3d x_axis = x_horizontal.normalized();
+    Ro.col(0) = x_axis;
+    Ro.col(1) = z_axis.cross(x_axis);
+    Ro.col(2) = z_axis;
+  } else {
+    InitializerHelper::gram_schmidt(z_axis, Ro);
+  }
   Eigen::Vector4d q_GtoI = rot_2_quat(Ro);
 
   // Set our biases equal to our noise (subtract our gravity from accelerometer bias)
