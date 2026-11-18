@@ -99,7 +99,7 @@ knn_ratio: 0.70
 track_frequency: 15.0
 downsample_cameras: false
 num_opencv_threads: 4
-histogram_method: "CLAHE" # NONE, HISTOGRAM, CLAHE
+histogram_method: "HISTOGRAM" # NONE, HISTOGRAM, CLAHE
 
 use_aruco: false
 num_aruco: 1024
@@ -109,9 +109,9 @@ downsize_aruco: true
 # ==================================================================
 
 up_msckf_sigma_px: 1.5
-up_msckf_chi2_multipler: 1
+up_msckf_chi2_multipler: 2.5
 up_slam_sigma_px: 1.5
-up_slam_chi2_multipler: 1
+up_slam_chi2_multipler: 2.5
 up_aruco_sigma_px: 1
 up_aruco_chi2_multipler: 1
 
@@ -132,7 +132,7 @@ range_sigma: 3.0               # [m] range noise plus features off the plane (ve
 range_huber_k: 3.0
 range_min: 0.0                 # valid ranges in (min, max]; it reports 250 m without a return
 range_max: 190.0
-range_max_tilt_deg: 60.0
+range_max_tilt_deg: 45.0
 range_max_gap: 0.1             # [s] between the two readings interpolated at a clone's time
 range_min_height: 5.0          # [m] no rows below (take-off, landing: features too close)
 range_dir_in_imu: [0.0, 0.0, -1.0]  # down in /imu_apps (FLU)

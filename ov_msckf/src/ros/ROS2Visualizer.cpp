@@ -383,7 +383,11 @@ void ROS2Visualizer::visualize_odometry(double timestamp) {
 
 builtin_interfaces::msg::Time ROS2Visualizer::state_stamp() const {
   auto state = _app->get_state();
-  return ROSVisualizerHelper::get_time_from_seconds(state->_timestamp + state->_calib_dt_CAMtoIMU->value()(0));
+  const double t = state->_timestamp + state->_calib_dt_CAMtoIMU->value()(0);
+  // Before initialisation the state has no time yet (-1): the track image is still shown, stamped now()
+  if (!_app->initialized() || t < 0.0)
+    return _node->now();
+  return ROSVisualizerHelper::get_time_from_seconds(t);
 }
 
 void ROS2Visualizer::stop() {
