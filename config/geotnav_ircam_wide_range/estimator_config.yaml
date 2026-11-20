@@ -69,11 +69,17 @@ init_dyn_min_rec_cond: 1e-12
 init_dyn_bias_g: [ 0.0, 0.0, 0.0 ]
 init_dyn_bias_a: [ 0.0, 0.0, 0.0 ]
 
+# Global yaw at initialisation = heading of this IMU axis (here x, the nose in FLU), so an external initial
+# heading aligns the VIO frame directly. Unset: upstream (arbitrary yaw from gravity alone).
+init_heading_axis_in_imu: [ 1.0, 0.0, 0.0 ]
+
 # ==================================================================
 # ==================================================================
 
 record_timing_information: false
 record_timing_filepath: "/tmp/traj_timing.txt"
+# A TRACK line per camera update: tracks, MSCKF features offered, triangulated and used, SLAM features, speed.
+print_track_stats: true
 
 save_total_state: false
 filepath_est: "/tmp/ov_estimate.txt"
@@ -119,6 +125,7 @@ use_mask: false
 
 relative_config_imu: "kalibr_imu_chain.yaml"
 relative_config_imucam: "kalibr_imucam_chain.yaml"
+relative_config_range: "range_chain.yaml"  # the rangefinder (read only with use_range)
 
 # ==================================================================
 # GeoTNav: rangefinder plane constraint. The ground is taken as a plane
@@ -127,12 +134,11 @@ relative_config_imucam: "kalibr_imucam_chain.yaml"
 # config (geotnav_ircam_wide) with the constraint on.
 # ==================================================================
 use_range: true
-range_topic: "/alt_raw"        # SF30/D lidar, sensor_msgs/LaserScan (first range), body-fixed along body z
-range_sigma: 3.0               # [m] range noise plus features off the plane (vegetation, roofs, slopes)
+range_sigma: 3.0               # [m] per feature: how far it sits off the plane (vegetation, roofs, slopes)
+range_sigma_shared: 3.0        # [m] shared by the rows using one reading (range noise, beam footprint off the plane); 0: independent rows
 range_huber_k: 3.0
 range_min: 0.0                 # valid ranges in (min, max]; it reports 250 m without a return
 range_max: 190.0
 range_max_tilt_deg: 45.0
 range_max_gap: 0.1             # [s] between the two readings interpolated at a clone's time
 range_min_height: 5.0          # [m] no rows below (take-off, landing: features too close)
-range_dir_in_imu: [0.0, 0.0, -1.0]  # down in /imu_apps (FLU)

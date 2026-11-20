@@ -1,0 +1,22 @@
+%YAML:1.0
+# ircam_wide.
+# T_imu_cam: R_CtoI from the mounting roll, pitch, yaw [pi, 0, -pi/2] (the IMU is in base_link): camera x
+# (image right) = -y, camera y (image down) = -x (image top towards the nose), camera z = down.
+# p_CinI is not measured (0); OpenVINS refines both online (calib_cam_extrinsics).
+# timeshift_cam_imu (t_imu = t_cam + shift): -0.052 s, measured against PX4's
+# attitude; refined online (calib_cam_timeoffset; it converged to -0.082 s on that flight).
+
+cam0:
+  T_imu_cam:
+    - [ 0.0, -1.0,  0.0, 0.0]
+    - [-1.0,  0.0,  0.0, 0.0]
+    - [ 0.0,  0.0, -1.0, 0.0]
+    - [ 0.0,  0.0,  0.0, 1.0]
+  cam_overlaps: []
+  camera_model: pinhole
+  distortion_model: equidistant
+  distortion_coeffs: [0.11389823560933401, -0.047964540864483436, 0.03365484510997941, -0.024026380265501895]
+  intrinsics: [350.65995278942671, 349.88504822544934, 319.5283672162455, 265.08771727410914]
+  resolution: [640, 512]
+  rostopic: /ircam_wide/decoded
+  timeshift_cam_imu: -0.052

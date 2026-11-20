@@ -104,6 +104,10 @@ struct VioManagerOptions {
   /// GeoTNav: the rangefinder plane constraint
   RangeOptions range_options;
 
+  /// GeoTNav: print a [TRACK] line per camera update (tracks, MSCKF features offered / triangulated / used,
+  /// SLAM features, speed), to see when vision thins out or fails
+  bool print_track_stats = false;
+
   /**
    * @brief This function will load print out all estimator settings loaded.
    * This allows for visual checking that everything was loaded properly from ROS/CMD parsers.
@@ -123,8 +127,10 @@ struct VioManagerOptions {
       parser->parse_config("zupt_only_at_beginning", zupt_only_at_beginning);
       parser->parse_config("record_timing_information", record_timing_information);
       parser->parse_config("record_timing_filepath", record_timing_filepath);
+      parser->parse_config("print_track_stats", print_track_stats, false);
     }
     range_options.print_and_load(parser);
+    PRINT_DEBUG("  - print_track_stats: %d\n", (int)print_track_stats);
     PRINT_DEBUG("  - dt_slam_delay: %.1f\n", dt_slam_delay);
     PRINT_DEBUG("  - zero_velocity_update: %d\n", try_zupt);
     PRINT_DEBUG("  - zupt_max_velocity: %.2f\n", zupt_max_velocity);

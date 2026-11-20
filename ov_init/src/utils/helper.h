@@ -171,6 +171,42 @@ public:
   }
 
   /**
+   * @brief GeoTNav: the rotation from a gravity-aligned global frame to the sensor, with the global x axis the
+   * horizontal projection of heading_axis_inI, so the global yaw is that axis's heading.
+   *
+   * Falls back to gram_schmidt (arbitrary yaw) if heading_axis_inI is zero (unset) or within ~17.5 deg of
+   * vertical, where its horizontal projection does not define a heading.
+   *
+   * @param gravity_inI Gravity (the global z axis, up) in the sensor frame, as for gram_schmidt
+   * @param heading_axis_inI Sensor axis that defines the heading (zero: unset)
+   * @param R_GtoI Rotation from the global frame to the sensor
+   * @param axis_from_vertical_deg If not null: the heading axis's angle from vertical [deg] (0 if unset). A
+   * gravity-direction error d turns the heading by up to d / sin(angle), so small angles give a sensitive heading.
+   * @return True if the heading axis was used
+   */
+  static bool gravity_aligned_rotation(const Eigen::Vector3d &gravity_inI, const Eigen::Vector3d &heading_axis_inI,
+                                       Eigen::Matrix3d &R_GtoI, double *axis_from_vertical_deg = nullptr) {
+    const Eigen::Vector3d z_axis = gravity_inI.normalized();
+    if (axis_from_vertical_deg != nullptr)
+      *axis_from_vertical_deg = 0.0;
+    if (heading_axis_inI.norm() > 1e-9) {
+      const Eigen::Vector3d a = heading_axis_inI.normalized();
+      const Eigen::Vector3d x_horizontal = a - z_axis * z_axis.dot(a);
+      if (axis_from_vertical_deg != nullptr)
+        *axis_from_vertical_deg = std::asin(std::min(1.0, x_horizontal.norm())) * 180.0 / M_PI;
+      if (x_horizontal.norm() > 0.3) {
+        const Eigen::Vector3d x_axis = x_horizontal.normalized();
+        R_GtoI.block(0, 0, 3, 1) = x_axis;
+        R_GtoI.block(0, 1, 3, 1) = z_axis.cross(x_axis);
+        R_GtoI.block(0, 2, 3, 1) = z_axis;
+        return true;
+      }
+    }
+    gram_schmidt(gravity_inI, R_GtoI);
+    return false;
+  }
+
+  /**
    * @brief Compute coefficients for the constrained optimization quadratic problem.
    *
    * https://gist.github.com/goldbattle/3791cbb11bbf4f5feb3f049dad72bfdd

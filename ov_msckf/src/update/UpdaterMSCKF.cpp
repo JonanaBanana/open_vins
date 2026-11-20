@@ -33,6 +33,8 @@
 #include "utils/print.h"
 #include "utils/quat_ops.h"
 
+#include <map>
+
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/math/distributions/chi_squared.hpp>
 
@@ -170,6 +172,38 @@ void UpdaterMSCKF::update(std::shared_ptr<State> state, std::vector<std::shared_
   size_t ct_jacob = 0;
   size_t ct_meas = 0;
 
+  // Append one feature's (projected) system to the large one
+  auto append_to_big = [&](const Eigen::MatrixXd &H_x, const Eigen::VectorXd &res, const std::vector<std::shared_ptr<Type>> &Hx_order) {
+    size_t ct_hx = 0;
+    for (const auto &var : Hx_order) {
+
+      // Ensure that this variable is in our Jacobian
+      if (Hx_mapping.find(var) == Hx_mapping.end()) {
+        Hx_mapping.insert({var, ct_jacob});
+        Hx_order_big.push_back(var);
+        ct_jacob += var->size();
+      }
+
+      // Append to our large Jacobian
+      Hx_big.block(ct_meas, Hx_mapping[var], H_x.rows(), var->size()) = H_x.block(0, ct_hx, H_x.rows(), var->size());
+      ct_hx += var->size();
+    }
+
+    // Append our residual and move forward
+    res_big.block(ct_meas, 0, res.rows(), 1) = res;
+    ct_meas += res.rows();
+  };
+
+  // GeoTNav: features that passed the visual chi2 test and have a range row. Their rows are whitened and
+  // the features projected out only after the loop, once it is known how many rows share each reading.
+  struct RangeFeature {
+    Eigen::MatrixXd H_f, H_x;
+    Eigen::VectorXd res;
+    std::vector<std::shared_ptr<Type>> Hx_order;
+    RangeRow row;
+  };
+  std::vector<RangeFeature> range_features;
+
   // 4. Compute linear system for each feature, nullspace project, and reject
   auto it2 = feature_vec.begin();
   while (it2 != feature_vec.end()) {
@@ -250,33 +284,32 @@ void UpdaterMSCKF::update(std::shared_ptr<State> state, std::vector<std::shared_
       continue;
     }
 
-    // GeoTNav: the visual rows passed; add the range row and project the feature out of all of them.
-    if (use_range && append_range_row(state, *it2, H_f_full, H_x_full, res_full, Hx_order)) {
-      UpdaterHelper::nullspace_project_inplace(H_f_full, H_x_full, res_full);
-      H_x = H_x_full;
-      res = res_full;
+    // GeoTNav: the visual rows passed; if the feature has a range row, keep its unprojected system for later.
+    RangeRow row;
+    if (use_range && compute_range_row(state, *it2, Hx_order, row)) {
+      range_features.push_back({H_f_full, H_x_full, res_full, Hx_order, row});
+      it2++;
+      continue;
     }
 
     // We are good!!! Append to our large H vector
-    size_t ct_hx = 0;
-    for (const auto &var : Hx_order) {
-
-      // Ensure that this variable is in our Jacobian
-      if (Hx_mapping.find(var) == Hx_mapping.end()) {
-        Hx_mapping.insert({var, ct_jacob});
-        Hx_order_big.push_back(var);
-        ct_jacob += var->size();
-      }
-
-      // Append to our large Jacobian
-      Hx_big.block(ct_meas, Hx_mapping[var], H_x.rows(), var->size()) = H_x.block(0, ct_hx, H_x.rows(), var->size());
-      ct_hx += var->size();
-    }
-
-    // Append our residual and move forward
-    res_big.block(ct_meas, 0, res.rows(), 1) = res;
-    ct_meas += res.rows();
+    append_to_big(H_x, res, Hx_order);
     it2++;
+  }
+
+  // GeoTNav: count the range rows per reading, append each feature's range row, project the feature out of
+  // its visual and range rows together, and append the result.
+  if (!range_features.empty()) {
+    std::map<double, int> n_per_reading;
+    for (const auto &rf : range_features) {
+      n_per_reading[rf.row.clone_time]++;
+    }
+    for (auto &rf : range_features) {
+      const int n_shared = n_per_reading.at(rf.row.clone_time);
+      append_range_row(rf.row, n_shared, rf.H_f, rf.H_x, rf.res);
+      UpdaterHelper::nullspace_project_inplace(rf.H_f, rf.H_x, rf.res);
+      append_to_big(rf.H_x, rf.res, rf.Hx_order);
+    }
   }
   rT3 = boost::posix_time::microsec_clock::local_time();
   last_stats.used = (int)feature_vec.size();
@@ -319,8 +352,8 @@ void UpdaterMSCKF::update(std::shared_ptr<State> state, std::vector<std::shared_
   PRINT_ALL("[MSCKF-UP]: %.4f seconds total\n", (rT5 - rT1).total_microseconds() * 1e-6);
 }
 
-bool UpdaterMSCKF::append_range_row(std::shared_ptr<State> state, const std::shared_ptr<Feature> &feature, Eigen::MatrixXd &H_f,
-                                    Eigen::MatrixXd &H_x, Eigen::VectorXd &res, const std::vector<std::shared_ptr<Type>> &Hx_order) {
+bool UpdaterMSCKF::compute_range_row(std::shared_ptr<State> state, const std::shared_ptr<Feature> &feature,
+                                     const std::vector<std::shared_ptr<Type>> &Hx_order, RangeRow &row) {
 
   // The newest clone the feature is seen from that has a valid range (clones are at camera times; the
   // ranges are stamped in the IMU clock).
@@ -358,32 +391,48 @@ bool UpdaterMSCKF::append_range_row(std::shared_ptr<State> state, const std::sha
     return false;
   }
 
-  // Beam in the global frame (z up): b = R_GtoI^T d, so b_z = d . (R_GtoI e_z). The predicted slant range
-  // to the horizontal plane through the feature is (p_I,z - p_F,z) / -b_z.
+  // Beam in the global frame (z up): b = R_GtoI^T d, so b_z = d . (R_GtoI e_z). The beam starts at the
+  // rangefinder, p_S = p_I + R_GtoI^T l (l: its position in the IMU frame), so its height above the
+  // horizontal plane through the feature is H = p_I,z + l . (R_GtoI e_z) - p_F,z, and the predicted slant
+  // range is H / -b_z.
   const Eigen::Vector3d &d = _range_options.dir_in_imu;
+  const Eigen::Vector3d &l = _range_options.p_in_imu;
   const Eigen::Vector3d &p_F = feature->p_FinG;
   const double b_z = d.dot(clone->Rot().col(2));
-  const double height = clone->pos()(2) - p_F(2);
+  const double height = clone->pos()(2) + l.dot(clone->Rot().col(2)) - p_F(2);
   if (-b_z < std::cos(_range_options.max_tilt_deg * M_PI / 180.0) || height <= 0.0 ||
       range * -b_z < _range_options.min_height) {
     return false;
   }
-  const double residual = range - height / -b_z;
 
   // Jacobians at the linearisation point (first estimates, as the visual rows). With
-  // R_GtoI = (I - [dtheta]x) R_hat: d b_z / d dtheta = d^T [R_hat e_z]x, and h = -H / b_z.
+  // R_GtoI = (I - [dtheta]x) R_hat, R_GtoI e_z = c + [c]x dtheta (c = R_hat e_z), so
+  // d b_z / d dtheta = d^T [c]x and d H / d dtheta = l^T [c]x; with h = -H / b_z:
+  // d h / d dtheta = -(1 / b_z) l^T [c]x + (H / b_z^2) d^T [c]x.
   const Eigen::Matrix3d R_lin = state->_options.do_fej ? clone->Rot_fej() : clone->Rot();
   const Eigen::Vector3d p_lin = state->_options.do_fej ? clone->pos_fej() : clone->pos();
+  const Eigen::Matrix3d c_skew = skew_x(R_lin.col(2));
   const double b_z_lin = d.dot(R_lin.col(2));
-  const double height_lin = p_lin(2) - p_F(2);
-  const Eigen::RowVector3d dh_dtheta = (height_lin / (b_z_lin * b_z_lin)) * d.transpose() * skew_x(R_lin.col(2));
-  const double dh_dpz = -1.0 / b_z_lin;
-  const double dh_dpfz = 1.0 / b_z_lin;
+  const double height_lin = p_lin(2) + l.dot(R_lin.col(2)) - p_F(2);
+  row.clone_time = clone_time;
+  row.col = col;
+  row.residual = range - height / -b_z;
+  row.dh_dtheta = (height_lin / (b_z_lin * b_z_lin)) * d.transpose() * c_skew - (1.0 / b_z_lin) * l.transpose() * c_skew;
+  row.dh_dpz = -1.0 / b_z_lin;
+  row.dh_dpfz = 1.0 / b_z_lin;
+  row.cos_tilt = -b_z;
+  return true;
+}
 
-  // Whiten to the pixel noise the rest of the update assumes; Huber weight beyond huber_k sigmas.
-  double sigma = _range_options.sigma;
-  if (std::abs(residual) > _range_options.huber_k * sigma) {
-    sigma = std::abs(residual) / _range_options.huber_k;
+void UpdaterMSCKF::append_range_row(const RangeRow &row, int n_shared, Eigen::MatrixXd &H_f, Eigen::MatrixXd &H_x,
+                                    Eigen::VectorXd &res) {
+
+  // Per-feature noise plus the shared part, counted once for all n_shared rows using this reading; then
+  // whiten to the pixel noise the rest of the update assumes, with a Huber-type clamp beyond huber_k sigmas.
+  double sigma = std::sqrt(_range_options.sigma * _range_options.sigma +
+                           n_shared * _range_options.sigma_shared * _range_options.sigma_shared);
+  if (std::abs(row.residual) > _range_options.huber_k * sigma) {
+    sigma = std::abs(row.residual) / _range_options.huber_k;
     _range_huber++;
   }
   const double w = _options.sigma_pix / sigma;
@@ -391,32 +440,37 @@ bool UpdaterMSCKF::append_range_row(std::shared_ptr<State> state, const std::sha
   const Eigen::Index n = H_x.rows();
   H_x.conservativeResize(n + 1, Eigen::NoChange);
   H_x.row(n).setZero();
-  H_x.block(n, col, 1, 3) = w * dh_dtheta;
-  H_x(n, col + 5) = w * dh_dpz;
+  H_x.block(n, row.col, 1, 3) = w * row.dh_dtheta;
+  H_x(n, row.col + 5) = w * row.dh_dpz;
   H_f.conservativeResize(n + 1, Eigen::NoChange);
   H_f.row(n).setZero();
-  H_f(n, 2) = w * dh_dpfz;
+  H_f(n, 2) = w * row.dh_dpfz;
   res.conservativeResize(n + 1);
-  res(n) = w * residual;
+  res(n) = w * row.residual;
 
+  const double residual = row.residual;
   _range_rows++;
   _range_res_sum += residual;
   _range_res_sq += residual * residual;
+  _range_shared_sum += n_shared;
+  _range_shared_max = std::max(_range_shared_max, n_shared);
   // By tilt (<10, 10-20, 20-30, >=30 deg): a plane rotated wrongly would show as a residual that changes
   // systematically with the tilt.
-  const int bin = std::min(3, (int)(std::acos(-b_z) * 180.0 / M_PI / 10.0));
+  const int bin = std::min(3, (int)(std::acos(std::min(1.0, row.cos_tilt)) * 180.0 / M_PI / 10.0));
   _range_bin_sum[bin] += residual;
   _range_bin_n[bin]++;
   if (_range_rows % 5000 == 0) {
     const double mean = _range_res_sum / 5000.0;
-    PRINT_INFO("[RANGE] %ld rows: residual mean %+.2f m, rms %.2f m over the last 5000; Huber %.1f %%, no range %ld; "
-               "mean by tilt <10/10-20/20-30/30+ deg: %+.2f %+.2f %+.2f %+.2f m (%ld %ld %ld %ld rows in all)\n",
-               _range_rows, mean, std::sqrt(_range_res_sq / 5000.0), 100.0 * _range_huber / _range_rows, _range_missing,
-               _range_bin_sum[0] / std::max(1L, _range_bin_n[0]), _range_bin_sum[1] / std::max(1L, _range_bin_n[1]),
-               _range_bin_sum[2] / std::max(1L, _range_bin_n[2]), _range_bin_sum[3] / std::max(1L, _range_bin_n[3]), _range_bin_n[0],
-               _range_bin_n[1], _range_bin_n[2], _range_bin_n[3]);
+    PRINT_INFO("[RANGE] %ld rows: residual mean %+.2f m, rms %.2f m over the last 5000; rows per reading mean %.1f, max %d; "
+               "Huber %.1f %%, no range %ld; mean by tilt <10/10-20/20-30/30+ deg: %+.2f %+.2f %+.2f %+.2f m (%ld %ld %ld %ld rows "
+               "in all)\n",
+               _range_rows, mean, std::sqrt(_range_res_sq / 5000.0), _range_shared_sum / 5000.0, _range_shared_max,
+               100.0 * _range_huber / _range_rows, _range_missing, _range_bin_sum[0] / std::max(1L, _range_bin_n[0]),
+               _range_bin_sum[1] / std::max(1L, _range_bin_n[1]), _range_bin_sum[2] / std::max(1L, _range_bin_n[2]),
+               _range_bin_sum[3] / std::max(1L, _range_bin_n[3]), _range_bin_n[0], _range_bin_n[1], _range_bin_n[2], _range_bin_n[3]);
     _range_res_sum = 0.0;
     _range_res_sq = 0.0;
+    _range_shared_sum = 0;
+    _range_shared_max = 0;
   }
-  return true;
 }

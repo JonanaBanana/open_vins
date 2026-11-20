@@ -115,6 +115,11 @@ struct InertialInitializerOptions {
   /// Initial IMU accelerometer bias values for dynamic initialization (will be optimized)
   Eigen::Vector3d init_dyn_bias_a = Eigen::Vector3d::Zero();
 
+  /// GeoTNav: an IMU axis (e.g. the vehicle's forward) whose horizontal projection becomes the global x axis
+  /// at initialisation, static or dynamic, so the global frame's yaw is that axis's heading then. Unset (zero):
+  /// upstream's choice from gravity alone (gram_schmidt), which is arbitrary relative to the vehicle.
+  Eigen::Vector3d init_heading_axis_in_imu = Eigen::Vector3d::Zero();
+
   /**
    * @brief This function will load print out all initializer settings loaded.
    * This allows for visual checking that everything was loaded properly from ROS/CMD parsers.
@@ -146,6 +151,19 @@ struct InertialInitializerOptions {
       parser->parse_config("init_dyn_bias_a", bias_a);
       init_dyn_bias_g << bias_g.at(0), bias_g.at(1), bias_g.at(2);
       init_dyn_bias_a << bias_a.at(0), bias_a.at(1), bias_a.at(2);
+      std::vector<double> heading_axis;
+      parser->parse_config("init_heading_axis_in_imu", heading_axis, false);
+      if (!heading_axis.empty()) {
+        if (heading_axis.size() != 3 || Eigen::Vector3d(heading_axis.at(0), heading_axis.at(1), heading_axis.at(2)).norm() < 1e-9) {
+          PRINT_ERROR(RED "init_heading_axis_in_imu must be a non-zero 3-vector\n" RESET);
+          std::exit(EXIT_FAILURE);
+        }
+        init_heading_axis_in_imu = Eigen::Vector3d(heading_axis.at(0), heading_axis.at(1), heading_axis.at(2)).normalized();
+      }
+    }
+    if (init_heading_axis_in_imu.norm() > 0) {
+      PRINT_INFO("initial global yaw: heading of the IMU axis [%.2f %.2f %.2f]\n", init_heading_axis_in_imu(0),
+                 init_heading_axis_in_imu(1), init_heading_axis_in_imu(2));
     }
     PRINT_DEBUG("  - init_window_time: %.2f\n", init_window_time);
     PRINT_DEBUG("  - init_imu_thresh: %.2f\n", init_imu_thresh);

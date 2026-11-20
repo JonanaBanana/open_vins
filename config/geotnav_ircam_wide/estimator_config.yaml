@@ -68,11 +68,17 @@ init_dyn_min_rec_cond: 1e-12
 init_dyn_bias_g: [ 0.0, 0.0, 0.0 ]
 init_dyn_bias_a: [ 0.0, 0.0, 0.0 ]
 
+# Global yaw at initialisation = heading of this IMU axis (here x, the nose in FLU), so an external initial
+# heading aligns the VIO frame directly. Unset: upstream (arbitrary yaw from gravity alone).
+init_heading_axis_in_imu: [ 1.0, 0.0, 0.0 ]
+
 # ==================================================================
 # ==================================================================
 
 record_timing_information: false
 record_timing_filepath: "/tmp/traj_timing.txt"
+# A TRACK line per camera update: tracks, MSCKF features offered, triangulated and used, SLAM features, speed.
+print_track_stats: true
 
 save_total_state: false
 filepath_est: "/tmp/ov_estimate.txt"

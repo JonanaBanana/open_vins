@@ -94,14 +94,30 @@ public:
   Stats last_stats;
 
 protected:
+  /// GeoTNav: one feature's range row before whitening (see compute_range_row)
+  struct RangeRow {
+    double clone_time = -1.0;      // clone (camera clock) whose reading is used: rows sharing it share the reading
+    size_t col = 0;                // the clone's first column (orientation, then position) in the feature's H_x
+    double residual = 0.0;         // measured minus predicted slant range [m]
+    Eigen::RowVector3d dh_dtheta;  // w.r.t. the clone's orientation error
+    double dh_dpz = 0.0;           // w.r.t. the clone's z position
+    double dh_dpfz = 0.0;          // w.r.t. the feature's z position
+    double cos_tilt = 1.0;         // beam's tilt from vertical
+  };
+
   /**
-   * @brief GeoTNav: append the range row to a feature's (unprojected) system; false if no valid range.
-   *
-   * Only for GLOBAL_3D features (H_f's columns are p_FinG). The row is whitened to the pixel noise,
-   * with a Huber weight beyond huber_k sigmas.
+   * @brief GeoTNav: the range row for a feature: false if no valid range, or the beam is too tilted or too
+   * low. Only for GLOBAL_3D features (H_f's columns are p_FinG).
    */
-  bool append_range_row(std::shared_ptr<State> state, const std::shared_ptr<ov_core::Feature> &feature, Eigen::MatrixXd &H_f,
-                        Eigen::MatrixXd &H_x, Eigen::VectorXd &res, const std::vector<std::shared_ptr<ov_type::Type>> &Hx_order);
+  bool compute_range_row(std::shared_ptr<State> state, const std::shared_ptr<ov_core::Feature> &feature,
+                         const std::vector<std::shared_ptr<ov_type::Type>> &Hx_order, RangeRow &row);
+
+  /**
+   * @brief GeoTNav: append a range row to a feature's (unprojected) system, whitened to the pixel noise.
+   * Its standard deviation is sqrt(sigma^2 + n_shared * sigma_shared^2), with a Huber-type clamp beyond
+   * huber_k of it.
+   */
+  void append_range_row(const RangeRow &row, int n_shared, Eigen::MatrixXd &H_f, Eigen::MatrixXd &H_x, Eigen::VectorXd &res);
 
   /// GeoTNav: rangefinder readings (null: the constraint is off) and options
   std::shared_ptr<RangeBuffer> _range_buffer;
@@ -115,6 +131,8 @@ protected:
   double _range_res_sq = 0.0;
   double _range_bin_sum[4] = {0, 0, 0, 0};  // whole run, by tilt
   long _range_bin_n[4] = {0, 0, 0, 0};
+  long _range_shared_sum = 0;  // sum over rows of the rows sharing their reading (window, as the residuals)
+  int _range_shared_max = 0;   // the most rows sharing one reading in one update (window)
 
   /// Options used during update
   UpdaterOptions _options;

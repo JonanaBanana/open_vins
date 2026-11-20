@@ -189,15 +189,34 @@ void ROS2Visualizer::setup_subscribers(std::shared_ptr<ov_core::YamlParser> pars
                                                               std::bind(&ROS2Visualizer::callback_inertial, this, std::placeholders::_1));
   PRINT_INFO("subscribing to IMU: %s\n", topic_imu.c_str());
 
-  // GeoTNav: the rangefinder for the plane constraint (LaserScan, the first range; stamps in the IMU clock).
+  // GeoTNav: the rangefinder for the plane constraint (stamps in the IMU clock). Readings outside the
+  // message's own limits are fed as invalid (gaps).
   const RangeOptions &range_options = _app->get_params().range_options;
   if (range_options.enabled) {
-    sub_range = _node->create_subscription<sensor_msgs::msg::LaserScan>(
-        range_options.topic, rclcpp::SensorDataQoS().keep_last(100), [this](const sensor_msgs::msg::LaserScan::SharedPtr msg) {
-          if (!msg->ranges.empty())
-            _app->feed_measurement_range(msg->header.stamp.sec + msg->header.stamp.nanosec * 1e-9, msg->ranges.front());
-        });
-    PRINT_INFO("subscribing to range: %s\n", range_options.topic.c_str());
+    if (range_options.msg_type == "laserscan") {
+      sub_range_scan = _node->create_subscription<sensor_msgs::msg::LaserScan>(
+          range_options.topic, rclcpp::SensorDataQoS().keep_last(100), [this](const sensor_msgs::msg::LaserScan::SharedPtr msg) {
+            if (msg->ranges.empty())
+              return;
+            // The first range is taken along the rangefinder frame's +x axis (T_imu_range), i.e. at angle 0
+            if (!range_angle_warned && std::abs(msg->angle_min) > 1e-6) {
+              PRINT_WARNING(YELLOW "[RANGE] LaserScan angle_min is %.4f rad, not 0: the first range is not along +x of the "
+                                   "rangefinder frame; include that angle in T_imu_range\n" RESET,
+                            msg->angle_min);
+              range_angle_warned = true;
+            }
+            _app->feed_measurement_range(msg->header.stamp.sec + msg->header.stamp.nanosec * 1e-9,
+                                         range_within_msg_limits(msg->ranges.front(), msg->range_min, msg->range_max));
+          });
+    } else {
+      sub_range = _node->create_subscription<sensor_msgs::msg::Range>(
+          range_options.topic, rclcpp::SensorDataQoS().keep_last(100), [this](const sensor_msgs::msg::Range::SharedPtr msg) {
+            _app->feed_measurement_range(msg->header.stamp.sec + msg->header.stamp.nanosec * 1e-9,
+                                         range_within_msg_limits(msg->range, msg->min_range, msg->max_range));
+          });
+    }
+    PRINT_INFO("subscribing to range: %s (%s)\n", range_options.topic.c_str(),
+               range_options.msg_type == "laserscan" ? "sensor_msgs/LaserScan" : "sensor_msgs/Range");
   }
 
   // Logic for sync stereo subscriber

@@ -32,6 +32,7 @@
 #include "types/LandmarkRepresentation.h"
 #include "utils/opencv_lambda_body.h"
 #include "utils/print.h"
+#include "utils/quat_ops.h"
 #include "utils/sensor_data.h"
 
 #include "init/InertialInitializer.h"
@@ -154,6 +155,28 @@ VioManager::VioManager(VioManagerOptions &params_) : thread_init_running(false),
   // Make the updater!
   updaterMSCKF = std::make_shared<UpdaterMSCKF>(params.msckf_options, params.featinit_options);
   if (params.range_options.enabled) {
+    // The range row is written for global 3D features (UpdaterMSCKF::append_range_row); with any other
+    // representation it would never be added.
+    if (params.state_options.feat_rep_msckf != LandmarkRepresentation::Representation::GLOBAL_3D) {
+      PRINT_ERROR(RED "use_range requires feat_rep_msckf: GLOBAL_3D (got %s)\n" RESET,
+                  LandmarkRepresentation::as_string(params.state_options.feat_rep_msckf).c_str());
+      std::exit(EXIT_FAILURE);
+    }
+    // Sanity check of the extrinsics: the plane model only needs the features to lie on the ground the beam
+    // ranges to, not the beam to point where a camera looks. But a camera looking away from the beam (e.g.
+    // up or forward while the beam points down) sees mostly points off that plane.
+    for (const auto &cam : params.camera_extrinsics) {
+      const Eigen::Matrix3d R_ItoC = quat_2_Rot(cam.second.block(0, 0, 4, 1));
+      const Eigen::Vector3d axis_in_imu = R_ItoC.row(2).transpose();
+      const double angle_deg = std::acos(std::max(-1.0, std::min(1.0, axis_in_imu.dot(params.range_options.dir_in_imu)))) * 180.0 / M_PI;
+      if (angle_deg > 90.0) {
+        PRINT_WARNING(YELLOW "[RANGE] cam%zu looks %.0f deg away from the rangefinder beam: the ground plane model assumes the "
+                             "camera sees the ground the beam ranges to; check T_imu_cam and T_imu_range\n" RESET,
+                      cam.first, angle_deg);
+      } else {
+        PRINT_INFO("[RANGE] cam%zu optical axis is %.0f deg from the rangefinder beam\n", cam.first, angle_deg);
+      }
+    }
     range_buffer = std::make_shared<RangeBuffer>(params.range_options);
     updaterMSCKF->set_range(range_buffer, params.range_options);
   }
@@ -533,8 +556,8 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
 
   // GeoTNav: one line per frame on how vision is doing, to see when updates thin out or go wrong
   // (fast rotation, blur): tracks in the current image, features offered to the MSCKF update and how
-  // many survive triangulation and the chi2 test, SLAM features, and the speed estimate.
-  {
+  // many survive triangulation and the chi2 test, SLAM features, and the speed estimate (print_track_stats).
+  if (params.print_track_stats) {
     int tracked = 0;
     for (const auto &cam : trackFEATS->get_last_obs()) {
       tracked += (int)cam.second.size();
@@ -543,6 +566,24 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
     PRINT_INFO("[TRACK] t %.3f tracked %d | msckf offered %d valid %d triangulated %d used %d | slam %d | speed %.2f m/s\n",
                state->_timestamp, tracked, msckf_offered, s.in, s.triangulated, s.used, (int)state->_features_SLAM.size(),
                state->_imu->vel().norm());
+  }
+
+  // Range constraint enabled but no readings near the state's time (nothing on the topic, a wrong
+  // range_msg_type, or stamps in another clock than the IMU's): warn every 10 s.
+  if (range_buffer != nullptr) {
+    const double t_imu = state->_timestamp + state->_calib_dt_CAMtoIMU->value()(0);
+    double t_range = 0.0;
+    const bool any = range_buffer->latest_time(t_range);
+    if ((!any || std::abs(t_imu - t_range) > 1.0) && (range_last_warn_time < 0 || t_imu - range_last_warn_time > 10.0)) {
+      if (any) {
+        PRINT_WARNING(YELLOW "[RANGE] newest reading is %+.3f s from the state time (IMU clock); check range_time_offset and that "
+                             "the range topic is publishing\n" RESET,
+                      t_range - t_imu);
+      } else {
+        PRINT_WARNING(YELLOW "[RANGE] use_range is on but no readings were received; check range_topic and range_msg_type\n" RESET);
+      }
+      range_last_warn_time = t_imu;
+    }
   }
 
   // Perform SLAM delay init and update

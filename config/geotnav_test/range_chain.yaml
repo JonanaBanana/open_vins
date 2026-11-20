@@ -1,0 +1,15 @@
+%YAML:1.0
+# SF30/D lidar on /alt_raw (sensor_msgs/LaserScan, first range), body-fixed, pointing down.
+# T_imu_range: the rangefinder frame in the IMU frame (/imu_apps, FLU); the beam is the frame's +x axis,
+# here the IMU's -z (down). Its position in the IMU frame is not measured (0).
+# time_offset (t_imu = t_range + offset): the range is assumed stamped in the IMU clock.
+
+range0:
+  T_imu_range:
+    - [ 0.0, 0.0, 1.0, 0.0]
+    - [ 0.0, 1.0, 0.0, 0.0]
+    - [-1.0, 0.0, 0.0, 0.0]
+    - [ 0.0, 0.0, 0.0, 1.0]
+  rostopic: /alt_raw
+  msg_type: laserscan
+  time_offset: 0.0

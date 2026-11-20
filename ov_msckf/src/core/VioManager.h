@@ -82,12 +82,12 @@ public:
 
   /**
    * @brief GeoTNav: feed function for a downward rangefinder (used by the plane constraint if enabled)
-   * @param timestamp Time of the reading, in the IMU clock
+   * @param timestamp Time of the reading, in the range sensor's clock (range_time_offset converts it to the IMU's)
    * @param range Slant range along the beam [m]; invalid readings are kept as gaps
    */
   void feed_measurement_range(double timestamp, double range) {
     if (range_buffer != nullptr)
-      range_buffer->feed(timestamp, range);
+      range_buffer->feed(timestamp + params.range_options.time_offset, range);
   }
 
   /**
@@ -212,6 +212,8 @@ protected:
 
   /// GeoTNav: rangefinder readings for the plane constraint (null if it is off)
   std::shared_ptr<RangeBuffer> range_buffer;
+  /// State time (IMU clock) of the last "no range readings" warning
+  double range_last_warn_time = -1;
 
   /// Our SLAM/ARUCO feature updater
   std::shared_ptr<UpdaterSLAM> updaterSLAM;

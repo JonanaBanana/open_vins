@@ -121,19 +121,17 @@ bool StaticInitializer::initialize(double &timestamp, Eigen::MatrixXd &covarianc
   // Get rotation with z axis aligned with -g (z_in_G=0,0,1)
   Eigen::Vector3d z_axis = a_avg_2to1 / a_avg_2to1.norm();
   Eigen::Matrix3d Ro;
-  // GeoTNav: the global x axis is the IMU's x axis (the drone's forward) made horizontal, so the global
-  // frame's yaw is the drone's heading when it initialises, which an init heading can give. Gram-Schmidt
-  // below picks x from gravity alone (the IMU's y or -x, whichever accelerometer axis is less vertical),
-  // which is effectively random between flights; it stays as the fallback if x were nearly vertical.
-  const Eigen::Vector3d e_1(1.0, 0.0, 0.0);
-  const Eigen::Vector3d x_horizontal = e_1 - z_axis * z_axis.dot(e_1);
-  if (x_horizontal.norm() > 0.3) {
-    const Eigen::Vector3d x_axis = x_horizontal.normalized();
-    Ro.col(0) = x_axis;
-    Ro.col(1) = z_axis.cross(x_axis);
-    Ro.col(2) = z_axis;
-  } else {
-    InitializerHelper::gram_schmidt(z_axis, Ro);
+  // GeoTNav: with init_heading_axis_in_imu set, the global x axis is that IMU axis made horizontal (the global
+  // yaw is its heading now); otherwise upstream's gram_schmidt.
+  double axis_deg = 0.0;
+  const bool heading_used = InitializerHelper::gravity_aligned_rotation(z_axis, params.init_heading_axis_in_imu, Ro, &axis_deg);
+  if (params.init_heading_axis_in_imu.norm() > 0 && !heading_used) {
+    PRINT_WARNING(YELLOW "[init-s]: init_heading_axis_in_imu is %.1f deg from vertical (< 17.5); global yaw is arbitrary (gram_schmidt)\n" RESET,
+                  axis_deg);
+  } else if (heading_used && axis_deg < 45.0) {
+    PRINT_WARNING(YELLOW "[init-s]: init_heading_axis_in_imu is only %.1f deg from vertical; the initial heading is %.1fx as sensitive to "
+                         "gravity-direction errors as for a horizontal axis\n" RESET,
+                  axis_deg, 1.0 / std::sin(axis_deg * M_PI / 180.0));
   }
   Eigen::Vector4d q_GtoI = rot_2_quat(Ro);
 

@@ -39,6 +39,7 @@
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
 #include <sensor_msgs/msg/point_cloud.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <sensor_msgs/msg/range.hpp>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <std_msgs/msg/float64.hpp>
 #include <tf2/LinearMath/Quaternion.h>
@@ -165,8 +166,11 @@ protected:
 
   // Our subscribers and camera synchronizers
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr sub_imu;
-  /// GeoTNav: the rangefinder for the plane constraint (only when it is enabled)
-  rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr sub_range;
+  /// GeoTNav: the rangefinder for the plane constraint (only when it is enabled; one of the two, by range_msg_type)
+  rclcpp::Subscription<sensor_msgs::msg::Range>::SharedPtr sub_range;
+  rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr sub_range_scan;
+  /// GeoTNav: warned once that a LaserScan's first range is not at angle 0
+  bool range_angle_warned = false;
   std::vector<rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr> subs_cam;
   typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::msg::Image, sensor_msgs::msg::Image> sync_pol;
   std::vector<std::shared_ptr<message_filters::Synchronizer<sync_pol>>> sync_cam;
