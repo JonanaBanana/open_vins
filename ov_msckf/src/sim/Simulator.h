@@ -95,7 +95,7 @@ public:
   bool get_next_imu(double &time_imu, Eigen::Vector3d &wm, Eigen::Vector3d &am);
 
   /**
-   * @brief GeoTNav: the next simulated rangefinder reading up to a time, if any (sim_range_freq).
+   * @brief Fork: the next simulated rangefinder reading up to a time, if any (sim_range_freq).
    *
    * The distance along the beam (range0 T_imu_range) to the ground plane (sim_ground_*), with noise
    * (sim_range_sigma) and objects above the ground (sim_range_outlier_*). NaN if the beam does not reach the
@@ -203,12 +203,12 @@ protected:
   /// Last time we had an CAMERA reading
   double timestamp_last_cam;
 
-  /// GeoTNav: last time (IMU clock) we had a rangefinder reading, and its random generator
+  /// Fork: last time (IMU clock) we had a rangefinder reading, and its random generator
   double timestamp_last_range;
   std::mt19937 gen_meas_range;
 
   /**
-   * @brief GeoTNav: distance along a ray to the ground plane raised by dz, or a negative value if it does not
+   * @brief Fork: distance along a ray to the ground plane raised by dz, or a negative value if it does not
    * reach it (sim_ground_height + sim_ground_gradient . (x, y) + dz, plus sim_ground_hills)
    */
   double ray_to_ground(const Eigen::Vector3d &origin, const Eigen::Vector3d &dir, double dz) const;

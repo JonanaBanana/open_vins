@@ -87,7 +87,7 @@ ROS2Visualizer::ROS2Visualizer(std::shared_ptr<rclcpp::Node> node, std::shared_p
   if (node->has_parameter("publish_calibration_tf")) {
     node->get_parameter<bool>("publish_calibration_tf", publish_calibration_tf);
   }
-  // GeoTNav: frame names (e.g. odom_vio -> base_link_vio) and the odometry / TF rate (0: every IMU sample).
+  // Fork: frame names (e.g. odom_vio -> base_link_vio) and the odometry / TF rate (0: every IMU sample).
   if (node->has_parameter("frame_global")) {
     node->get_parameter<std::string>("frame_global", frame_global);
   }
@@ -184,12 +184,12 @@ void ROS2Visualizer::setup_subscribers(std::shared_ptr<ov_core::YamlParser> pars
   _node->declare_parameter<std::string>("topic_imu", "/imu0");
   _node->get_parameter("topic_imu", topic_imu);
   parser->parse_external("relative_config_imu", "imu0", "rostopic", topic_imu);
-  // GeoTNav: a deep queue; VOXL's IMU arrives in ~1 kHz bursts and SensorDataQoS keeps only 5.
+  // Fork: a deep queue; some IMU drivers deliver ~1 kHz bursts and SensorDataQoS keeps only 5.
   sub_imu = _node->create_subscription<sensor_msgs::msg::Imu>(topic_imu, rclcpp::SensorDataQoS().keep_last(1000),
                                                               std::bind(&ROS2Visualizer::callback_inertial, this, std::placeholders::_1));
   PRINT_INFO("subscribing to IMU: %s\n", topic_imu.c_str());
 
-  // GeoTNav: the rangefinder for the plane constraint (stamps in the IMU clock). Readings outside the
+  // Fork: the rangefinder for the plane constraint (stamps in the IMU clock). Readings outside the
   // message's own limits are fed as invalid (gaps).
   const RangeOptions &range_options = _app->get_params().range_options;
   if (range_options.enabled) {
@@ -321,7 +321,7 @@ void ROS2Visualizer::visualize_odometry(double timestamp) {
   std::shared_ptr<State> state = _app->get_state();
   Eigen::Matrix<double, 13, 1> state_plus = Eigen::Matrix<double, 13, 1>::Zero();
   Eigen::Matrix<double, 12, 12> cov_plus = Eigen::Matrix<double, 12, 12>::Zero();
-  // GeoTNav: at most odom_rate_hz (the IMU arrives at ~430 Hz)
+  // Fork: at most odom_rate_hz (the IMU arrives at ~430 Hz)
   if (odom_rate_hz > 0 && timestamp - last_odom_time < 1.0 / odom_rate_hz)
     return;
   if (!_app->get_propagator()->fast_state_propagate(state, timestamp, state_plus, cov_plus))
@@ -379,7 +379,7 @@ void ROS2Visualizer::visualize_odometry(double timestamp) {
   auto odom_pose = std::make_shared<ov_type::PoseJPL>();
   odom_pose->set_value(state_plus.block(0, 0, 7, 1));
   geometry_msgs::msg::TransformStamped trans = ROSVisualizerHelper::get_stamped_transform_from_pose(_node, odom_pose, false);
-  // GeoTNav: stamped with the state's time (IMU clock, as the images), not now(): consumers look the pose up
+  // Fork: stamped with the state's time (IMU clock, as the images), not now(): consumers look the pose up
   // at an image's exposure time.
   trans.header.stamp = ROSVisualizerHelper::get_time_from_seconds(timestamp);
   trans.header.frame_id = frame_global;
@@ -391,7 +391,7 @@ void ROS2Visualizer::visualize_odometry(double timestamp) {
   // Loop through each camera calibration and publish it
   for (const auto &calib : state->_calib_IMUtoCAM) {
     geometry_msgs::msg::TransformStamped trans_calib = ROSVisualizerHelper::get_stamped_transform_from_pose(_node, calib.second, true);
-    trans_calib.header.stamp = trans.header.stamp;  // GeoTNav: not now(), which mixes clocks in TF
+    trans_calib.header.stamp = trans.header.stamp;  // Fork: not now(), which mixes clocks in TF
     trans_calib.header.frame_id = frame_imu;
     trans_calib.child_frame_id = frame_cam + std::to_string(calib.first);
     if (publish_calibration_tf) {
@@ -512,7 +512,7 @@ void ROS2Visualizer::callback_inertial(const sensor_msgs::msg::Imu::SharedPtr ms
   message.wm << msg->angular_velocity.x, msg->angular_velocity.y, msg->angular_velocity.z;
   message.am << msg->linear_acceleration.x, msg->linear_acceleration.y, msg->linear_acceleration.z;
 
-  // GeoTNav: drop out-of-order samples and keep statistics of the stream.
+  // Fork: drop out-of-order samples and keep statistics of the stream.
   imu_received++;
   if (message.timestamp <= imu_last_timestamp) {
     imu_out_of_order++;
@@ -536,7 +536,7 @@ void ROS2Visualizer::callback_inertial(const sensor_msgs::msg::Imu::SharedPtr ms
   if (thread_update_running)
     return;
   thread_update_running = true;
-  // GeoTNav: capture the message by value (upstream's [&] read the callback's local message after the
+  // Fork: capture the message by value (upstream's [&] read the callback's local message after the
   // callback had returned)
   std::thread thread([this, message] {
     // Lock on the queue (prevents new images from appending)
@@ -720,7 +720,7 @@ void ROS2Visualizer::publish_state() {
   // NOTE: We downsample the number of poses as needed to prevent rviz crashes
   // NOTE: https://github.com/ros-visualization/rviz/issues/1107
   nav_msgs::msg::Path arrIMU;
-  arrIMU.header.stamp = poseIinM.header.stamp;  // GeoTNav: the latest pose's time, not now()
+  arrIMU.header.stamp = poseIinM.header.stamp;  // Fork: the latest pose's time, not now()
   arrIMU.header.frame_id = frame_global;
   for (size_t i = 0; i < poses_imu.size(); i += std::floor((double)poses_imu.size() / 16384.0) + 1) {
     arrIMU.poses.push_back(poses_imu.at(i));
@@ -763,7 +763,7 @@ void ROS2Visualizer::publish_features() {
       pub_points_aruco->get_subscription_count() == 0 && pub_points_sim->get_subscription_count() == 0)
     return;
 
-  // GeoTNav: the clouds are in the global frame at the state's time (the helper stamps "global" and now())
+  // Fork: the clouds are in the global frame at the state's time (the helper stamps "global" and now())
   const auto stamp = state_stamp();
   auto cloud_in_global = [&](const std::vector<Eigen::Vector3d> &feats) {
     sensor_msgs::msg::PointCloud2 cloud = ROSVisualizerHelper::get_ros_pointcloud(_node, feats);

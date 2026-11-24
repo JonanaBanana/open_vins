@@ -120,7 +120,7 @@ int main(int argc, char **argv) {
 #if ROS_AVAILABLE == 1
   ros::shutdown();
 #elif ROS_AVAILABLE == 2
-  // GeoTNav: destroy the publishers and subscriptions (held by viz and the parser) before shutdown;
+  // Fork: destroy the publishers and subscriptions (held by viz and the parser) before shutdown;
   // as globals they were destroyed after DDS at exit: "Failed to delete datawriter", then a segfault
   executor.remove_node(node);
   viz.reset();

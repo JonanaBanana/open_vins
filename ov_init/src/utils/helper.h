@@ -171,7 +171,7 @@ public:
   }
 
   /**
-   * @brief GeoTNav: the rotation from a gravity-aligned global frame to the sensor, with the global x axis the
+   * @brief Fork: the rotation from a gravity-aligned global frame to the sensor, with the global x axis the
    * horizontal projection of heading_axis_inI, so the global yaw is that axis's heading.
    *
    * Falls back to gram_schmidt (arbitrary yaw) if heading_axis_inI is zero (unset) or within ~17.5 deg of

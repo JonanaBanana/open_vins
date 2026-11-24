@@ -115,7 +115,7 @@ struct InertialInitializerOptions {
   /// Initial IMU accelerometer bias values for dynamic initialization (will be optimized)
   Eigen::Vector3d init_dyn_bias_a = Eigen::Vector3d::Zero();
 
-  /// GeoTNav: an IMU axis (e.g. the vehicle's forward) whose horizontal projection becomes the global x axis
+  /// Fork: an IMU axis (e.g. the vehicle's forward) whose horizontal projection becomes the global x axis
   /// at initialisation, static or dynamic, so the global frame's yaw is that axis's heading then. Unset (zero):
   /// upstream's choice from gravity alone (gram_schmidt), which is arbitrary relative to the vehicle.
   Eigen::Vector3d init_heading_axis_in_imu = Eigen::Vector3d::Zero();

@@ -141,7 +141,7 @@ bool Propagator::fast_state_propagate(std::shared_ptr<State> state, double times
                                       Eigen::Matrix<double, 12, 12> &covariance) {
 
   // First we will store the current calibration / estimates of the state
-  // GeoTNav: the cache is kept in the IMU clock from the start, like after the first propagation below (which
+  // Fork: the cache is kept in the IMU clock from the start, like after the first propagation below (which
   // sets cache_t_off = 0). Before, the first call after an update treated timestamp as camera time and the later
   // ones as IMU time, so with a camera-IMU offset dt the first pose after every update was dt old.
   if (!cache_imu_valid) {

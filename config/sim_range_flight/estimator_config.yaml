@@ -1,7 +1,7 @@
 %YAML:1.0 # need to specify the file type at the top!
 # Simulated 100 m flight over flat ground (run_simulation) to test the rangefinder plane constraint against
-# ground truth. Monocular downward camera (640x512, equidistant), IMU noise as measured in flight, downward
-# rangefinder; estimator settings as config/geotnav_ircam_wide_range. Run from the workspace root (sim_traj_path).
+# ground truth. Monocular downward camera (640x512, equidistant), IMU noise as measured on a multirotor in
+# flight, downward rangefinder. Run from the workspace root (sim_traj_path).
 
 verbosity: "INFO" # ALL, DEBUG, INFO, WARNING, ERROR, SILENT
 
@@ -126,16 +126,15 @@ relative_config_imucam: "kalibr_imucam_chain.yaml"
 relative_config_range: "range_chain.yaml"  # the rangefinder (read only with use_range)
 
 # ==================================================================
-# GeoTNav: rangefinder plane constraint. The ground is taken as a plane
-# perpendicular to gravity; each MSCKF feature gets one more row: the rangefinder's slant range at the
-# newest clone it is seen from, predicted as (clone z - feature z) / cos(tilt). This is the baseline
-# config (geotnav_ircam_wide) with the constraint on.
+# Rangefinder plane constraint. The ground is taken as a plane perpendicular to gravity. Each MSCKF
+# feature with enough parallax gets one more row: the rangefinder's slant range at the newest clone it is seen
+# from, predicted as (clone z - feature z) / cos(tilt). New SLAM features are created with the range.
 # ==================================================================
 use_range: true
 range_sigma: 3.0               # [m] per feature: how far it sits off the plane (vegetation, roofs, slopes)
 range_sigma_shared: 3.0        # [m] shared by the rows using one reading (range noise, beam footprint off the plane); 0: independent rows
 range_huber_k: 3.0
-range_min: 0.0                 # valid ranges in (min, max]; it reports 250 m without a return
+range_min: 0.0                 # valid ranges in (min, max]; set max below a "no return" value if the sensor reports one
 range_max: 190.0
 range_max_tilt_deg: 45.0
 range_max_gap: 0.1             # [s] between the two readings interpolated at a clone's time

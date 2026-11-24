@@ -123,7 +123,7 @@ relative_config_imucam: "kalibr_imucam_chain.yaml"
 relative_config_range: "range_chain.yaml"  # the rangefinder (read only with use_range)
 
 # ==================================================================
-# GeoTNav: rangefinder plane constraint. The ground is taken as a plane perpendicular to gravity. Each MSCKF
+# Rangefinder plane constraint. The ground is taken as a plane perpendicular to gravity. Each MSCKF
 # feature with enough parallax gets one more row: the rangefinder's slant range at the newest clone it is seen
 # from, predicted as (clone z - feature z) / cos(tilt). New SLAM features are created with the range.
 # ==================================================================

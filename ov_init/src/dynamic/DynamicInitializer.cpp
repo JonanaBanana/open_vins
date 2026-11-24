@@ -551,7 +551,7 @@ bool DynamicInitializer::initialize(double &timestamp, Eigen::MatrixXd &covarian
   // Convert our states to be a gravity aligned global frame of reference
   // Here we say that the I0 frame is at 0,0,0 and shared the global origin
   Eigen::Matrix3d R_GtoI0;
-  // GeoTNav: with init_heading_axis_in_imu set, the global x axis is that axis of I0 made horizontal (the global
+  // Fork: with init_heading_axis_in_imu set, the global x axis is that axis of I0 made horizontal (the global
   // yaw is its heading at I0); otherwise upstream's gram_schmidt.
   double axis_deg = 0.0;
   const bool heading_used = InitializerHelper::gravity_aligned_rotation(gravity_inI0, params.init_heading_axis_in_imu, R_GtoI0, &axis_deg);

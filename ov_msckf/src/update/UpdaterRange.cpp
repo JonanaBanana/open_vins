@@ -1,5 +1,5 @@
 /*
- * GeoTNav addition to OpenVINS: the rangefinder plane constraint, shared by the MSCKF and SLAM updaters.
+ * Addition to OpenVINS (fork): the rangefinder plane constraint, shared by the MSCKF and SLAM updaters.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by

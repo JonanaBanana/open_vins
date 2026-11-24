@@ -155,12 +155,19 @@ VioManager::VioManager(VioManagerOptions &params_) : thread_init_running(false),
   // Make the updater!
   updaterMSCKF = std::make_shared<UpdaterMSCKF>(params.msckf_options, params.featinit_options);
   if (params.range_options.enabled) {
-    // The range row is written for global 3D features (UpdaterMSCKF::append_range_row); with any other
-    // representation it would never be added.
+    // The MSCKF range row is written for global 3D features (UpdaterMSCKF); with any other representation it
+    // would never be added.
     if (params.state_options.feat_rep_msckf != LandmarkRepresentation::Representation::GLOBAL_3D) {
       PRINT_ERROR(RED "use_range requires feat_rep_msckf: GLOBAL_3D (got %s)\n" RESET,
                   LandmarkRepresentation::as_string(params.state_options.feat_rep_msckf).c_str());
       std::exit(EXIT_FAILURE);
+    }
+    // SLAM features from the range need a 3D position; the single inverse depth is initialised as a depth only
+    // (UpdaterSLAM::delayed_init then creates them as upstream does)
+    if (params.range_options.slam_init &&
+        params.state_options.feat_rep_slam == LandmarkRepresentation::Representation::ANCHORED_INVERSE_DEPTH_SINGLE) {
+      PRINT_WARNING(YELLOW "[RANGE] range_slam_init has no effect with feat_rep_slam: ANCHORED_INVERSE_DEPTH_SINGLE; SLAM "
+                           "features are created by triangulation only\n" RESET);
     }
     // Sanity check of the extrinsics: the plane model only needs the features to lie on the ground the beam
     // ranges to, not the beam to point where a camera looks. But a camera looking away from the beam (e.g.
@@ -270,7 +277,7 @@ void VioManager::feed_measurement_simulation(double timestamp, const std::vector
     std::exit(EXIT_FAILURE);
   }
 
-  // GeoTNav: with keyframes and no recent clones, only keyframes are propagated, cloned and used to update
+  // Fork: with keyframes and no recent clones, only keyframes are propagated, cloned and used to update
   frame_is_keyframe = is_keyframe();
   if (!frame_is_keyframe && !use_recent_clones())
     return;
@@ -353,7 +360,7 @@ void VioManager::track_image_and_update(const ov_core::CameraData &message_const
     frames_since_keyframe = params.keyframe_every_n_frames;  // the initialisation frame is a keyframe
   }
 
-  // GeoTNav: with keyframes and no recent clones, only keyframes are propagated, cloned and used to update (the
+  // Fork: with keyframes and no recent clones, only keyframes are propagated, cloned and used to update (the
   // others were only tracked)
   frame_is_keyframe = is_keyframe();
   if (!frame_is_keyframe && !use_recent_clones())
@@ -444,7 +451,7 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
   feats_lost = trackFEATS->get_feature_database()->features_not_containing_newer(state->_timestamp, false, true);
 
   // Don't need to get the oldest features until we reach our max number of clones
-  // GeoTNav: with recent clones, only when the oldest clone is marginalized after this update; a non-keyframe
+  // Fork: with recent clones, only when the oldest clone is marginalized after this update; a non-keyframe
   // clone is marginalized with its observations dropped (the features keep the others, at the keyframes)
   double marg_time = -1;
   bool marg_oldest = false;
@@ -501,7 +508,7 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
     // See if any of our camera's reached max track
     bool reached_max = false;
     for (const auto &cams : (*it2)->timestamps) {
-      // GeoTNav: with keyframes, only the observations at clones count (the others are dropped by the updates)
+      // Fork: with keyframes, only the observations at clones count (the others are dropped by the updates)
       int n_obs = (int)cams.second.size();
       if (params.keyframe_every_n_frames > 1) {
         n_obs = (int)std::count_if(cams.second.begin(), cams.second.end(),
@@ -620,7 +627,7 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
   propagator->invalidate_cache();
   rT4 = boost::posix_time::microsec_clock::local_time();
 
-  // GeoTNav: one line per frame on how vision is doing, to see when updates thin out or go wrong
+  // Fork: one line per frame on how vision is doing, to see when updates thin out or go wrong
   // (fast rotation, blur): tracks in the current image, features offered to the MSCKF update and how
   // many survive triangulation and the chi2 test, SLAM features, and the speed estimate (print_track_stats).
   if (params.print_track_stats) {
@@ -635,18 +642,19 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
   }
 
   // Range constraint enabled but no readings near the state's time (nothing on the topic, a wrong
-  // range_msg_type, or stamps in another clock than the IMU's): warn every 10 s.
+  // msg_type, or stamps in another clock than the IMU's): warn every 10 s.
   if (range_buffer != nullptr) {
     const double t_imu = state->_timestamp + state->_calib_dt_CAMtoIMU->value()(0);
     double t_range = 0.0;
     const bool any = range_buffer->latest_time(t_range);
     if ((!any || std::abs(t_imu - t_range) > 1.0) && (range_last_warn_time < 0 || t_imu - range_last_warn_time > 10.0)) {
       if (any) {
-        PRINT_WARNING(YELLOW "[RANGE] newest reading is %+.3f s from the state time (IMU clock); check range_time_offset and that "
-                             "the range topic is publishing\n" RESET,
+        PRINT_WARNING(YELLOW "[RANGE] newest reading is %+.3f s from the state time (IMU clock); check time_offset in "
+                             "relative_config_range and that the range topic is publishing\n" RESET,
                       t_range - t_imu);
       } else {
-        PRINT_WARNING(YELLOW "[RANGE] use_range is on but no readings were received; check range_topic and range_msg_type\n" RESET);
+        PRINT_WARNING(YELLOW "[RANGE] use_range is on but no readings were received; check rostopic and msg_type in "
+                             "relative_config_range (readings are only fed by the ROS 2 node and run_simulation)\n" RESET);
       }
       range_last_warn_time = t_imu;
     }
@@ -673,7 +681,7 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
   updaterSLAM->delayed_init(state, feats_slam_DELAYED);
   rT6 = boost::posix_time::microsec_clock::local_time();
 
-  // GeoTNav: every 10 s, how far the SLAM features sit from the plane under the beam now. Their spread is the
+  // Fork: every 10 s, how far the SLAM features sit from the plane under the beam now. Their spread is the
   // terrain; a mean that grows means the map's scale or height drifts from the rangefinder's.
   if (range_updater != nullptr && (range_last_slam_log < 0 || state->_timestamp - range_last_slam_log > 10.0)) {
     double range = 0.0, z_plane = 0.0;
@@ -729,7 +737,7 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
   }
 
   if (use_recent_clones()) {
-    // GeoTNav: marginalize the clone chosen before the update (if any), as upstream does the oldest below
+    // Fork: marginalize the clone chosen before the update (if any), as upstream does the oldest below
     if (marg_time >= 0) {
       updaterSLAM->change_anchors(state, marg_time);
       if (marg_oldest) {
@@ -764,6 +772,11 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
 
     // Finally marginalize the oldest clone if needed
     StateHelper::marginalize_old_clone(state);
+  }
+
+  // Fork: range readings are only looked up at clone times; keep those from the oldest clone on (1 s margin)
+  if (range_buffer != nullptr && !state->_clones_IMU.empty()) {
+    range_buffer->prune_before(state->_clones_IMU.begin()->first + state->_calib_dt_CAMtoIMU->value()(0) - 1.0);
   }
   rT7 = boost::posix_time::microsec_clock::local_time();
 

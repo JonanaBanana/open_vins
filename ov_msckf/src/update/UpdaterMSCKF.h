@@ -73,7 +73,7 @@ public:
   void update(std::shared_ptr<State> state, std::vector<std::shared_ptr<ov_core::Feature>> &feature_vec);
 
   /**
-   * @brief GeoTNav: enable the rangefinder plane constraint (UpdaterRange, shared with the SLAM updater).
+   * @brief Fork: enable the rangefinder plane constraint (UpdaterRange, shared with the SLAM updater).
    *
    * Each feature that passes the (visual) chi2 test and has enough parallax gets one more row before it is
    * projected out: the rangefinder's slant range at the newest clone it is seen from, predicted as the distance
@@ -82,7 +82,7 @@ public:
    */
   void set_range(std::shared_ptr<UpdaterRange> range) { _range = range; }
 
-  /// GeoTNav: how the last update's features fared (for the per-frame [TRACK] log line)
+  /// Fork: how the last update's features fared (for the per-frame [TRACK] log line)
   struct Stats {
     int in = 0;            // features offered with at least two measurements
     int triangulated = 0;  // of those, triangulated and refined
@@ -91,7 +91,7 @@ public:
   Stats last_stats;
 
 protected:
-  /// GeoTNav: the rangefinder plane constraint (null: off)
+  /// Fork: the rangefinder plane constraint (null: off)
   std::shared_ptr<UpdaterRange> _range;
 
   /// Options used during update

@@ -78,7 +78,7 @@ public:
   void delayed_init(std::shared_ptr<State> state, std::vector<std::shared_ptr<ov_core::Feature>> &feature_vec);
 
   /**
-   * @brief GeoTNav: create SLAM features with the rangefinder (range_slam_init). A feature triangulated with enough
+   * @brief Fork: create SLAM features with the rangefinder (range_slam_init). A feature triangulated with enough
    * parallax is initialised from all its image observations plus a range row; otherwise (or if triangulation
    * fails) it is placed where its newest bearing meets the plane at the measured height and initialised from that
    * bearing and the range alone, without updating the rest of the state. See UpdaterRange.
@@ -96,7 +96,7 @@ public:
   void change_anchors(std::shared_ptr<State> state);
 
   /**
-   * @brief GeoTNav: move the anchor of SLAM features anchored in the given clone (any clone, e.g. a non-keyframe
+   * @brief Fork: move the anchor of SLAM features anchored in the given clone (any clone, e.g. a non-keyframe
    * about to be marginalized) into the newest clone
    * @param state State of the filter
    * @param marg_timestep Time of the clone that will be marginalized
@@ -123,7 +123,7 @@ protected:
   /// Feature initializer class object
   std::shared_ptr<ov_core::FeatureInitializer> initializer_feat;
 
-  /// GeoTNav: the rangefinder plane constraint for SLAM feature initialisation (null: upstream)
+  /// Fork: the rangefinder plane constraint for SLAM feature initialisation (null: upstream)
   std::shared_ptr<UpdaterRange> _range;
 
   /// Chi squared 95th percentile table (lookup would be size of residual)

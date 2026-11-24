@@ -494,7 +494,7 @@ std::vector<std::pair<size_t, Eigen::VectorXf>> Simulator::project_pointcloud(co
       continue;
     }
 
-    // GeoTNav: the distortion must map this direction back to itself. Beyond its valid range a wide-angle model
+    // Fork: the distortion must map this direction back to itself. Beyond its valid range a wide-angle model
     // folds back (the equidistant polynomial's radius peaks and decreases again), and points far off the optical
     // axis would land inside the image at a wrong position.
     if ((camera->undistort_f(uv_dist) - uv_norm).norm() > 1e-3f) {
@@ -523,7 +523,7 @@ void Simulator::generate_points(const Eigen::Matrix3d &R_GtoI, const Eigen::Vect
   std::shared_ptr<ov_core::CamBase> camera = params.camera_intrinsics.at(camid);
 
   // Generate the desired number of features
-  // GeoTNav: on the ground plane, rays that miss it (above the horizon) or reach it too far away are retried,
+  // Fork: on the ground plane, rays that miss it (above the horizon) or reach it too far away are retried,
   // a bounded number of times
   int generated = 0;
   for (int attempt = 0; generated < numpts && attempt < 20 * numpts; attempt++) {
@@ -546,7 +546,7 @@ void Simulator::generate_points(const Eigen::Matrix3d &R_GtoI, const Eigen::Vect
 
     double depth;
     if (params.sim_ground_plane) {
-      // GeoTNav: the depth at which the ray meets the ground plane, offset by the feature's own height (roughness).
+      // Fork: the depth at which the ray meets the ground plane, offset by the feature's own height (roughness).
       // With the bearing at unit depth, the distance along it is the depth.
       std::normal_distribution<double> gen_rough(0.0, 1.0);
       const double dz = params.sim_ground_roughness * gen_rough(gen_state_init);

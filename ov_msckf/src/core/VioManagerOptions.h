@@ -101,20 +101,20 @@ struct VioManagerOptions {
   /// The path to the file we will record the timing information into
   std::string record_timing_filepath = "ov_msckf_timing.txt";
 
-  /// GeoTNav: the rangefinder plane constraint
+  /// Fork: the rangefinder plane constraint
   RangeOptions range_options;
 
-  /// GeoTNav: every n-th tracked frame is a keyframe. Clones older than the num_recent_clones newest are kept
+  /// Fork: every n-th tracked frame is a keyframe. Clones older than the num_recent_clones newest are kept
   /// only at keyframes, so the window of max_clones spans a longer time: the baseline distant scenes need, with
   /// frame-to-frame tracking and initialisation at the full track_frequency. 1: every frame (upstream).
   int keyframe_every_n_frames = 1;
 
-  /// GeoTNav (with keyframe_every_n_frames > 1): the newest frames that are clones whether or not they are
+  /// Fork (with keyframe_every_n_frames > 1): the newest frames that are clones whether or not they are
   /// keyframes; every frame is then propagated and updated. A non-keyframe clone leaving this part is
   /// marginalized and its observations dropped. 0: only keyframes are propagated, cloned and updated.
   int num_recent_clones = 0;
 
-  /// GeoTNav: print a [TRACK] line per camera update (tracks, MSCKF features offered / triangulated / used,
+  /// Fork: print a [TRACK] line per camera update (tracks, MSCKF features offered / triangulated / used,
   /// SLAM features, speed), to see when vision thins out or fails
   bool print_track_stats = false;
 
@@ -583,7 +583,7 @@ struct VioManagerOptions {
   /// Feature distance we generate features from (maximum)
   double sim_max_feature_gen_distance = 10;
 
-  /// GeoTNav: generate features on a ground surface instead of at random depths: the plane
+  /// Fork: generate features on a ground surface instead of at random depths: the plane
   /// z = sim_ground_height + gradient . (x, y) in the global frame, each feature offset from it by a normal
   /// random height (sim_ground_roughness; vegetation, buildings). Features farther than
   /// sim_max_feature_gen_dist are not seen, as in the default mode.
@@ -591,11 +591,11 @@ struct VioManagerOptions {
   double sim_ground_height = 0.0;
   Eigen::Vector2d sim_ground_gradient = Eigen::Vector2d::Zero();
   double sim_ground_roughness = 0.0;
-  /// GeoTNav: hills on the ground plane, A sin(2 pi x / L) sin(2 pi y / L) with [A, L] = sim_ground_hills [m]
+  /// Fork: hills on the ground plane, A sin(2 pi x / L) sin(2 pi y / L) with [A, L] = sim_ground_hills [m]
   /// (steepest slope 2 pi A / L). A = 0: none.
   Eigen::Vector2d sim_ground_hills = Eigen::Vector2d::Zero();
 
-  /// GeoTNav: simulated rangefinder (with use_range): readings at sim_range_freq [Hz] of the distance along the
+  /// Fork: simulated rangefinder (with use_range): readings at sim_range_freq [Hz] of the distance along the
   /// beam (range0 T_imu_range) to the ground plane, plus normal noise sim_range_sigma [m]. With probability
   /// sim_range_outlier_prob a reading hits an object above the ground instead (canopy, roofs): it is shorter by
   /// a uniform height in (0, sim_range_outlier_max] [m] along the vertical.

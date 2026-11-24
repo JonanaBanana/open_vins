@@ -1,5 +1,5 @@
 /*
- * GeoTNav addition to OpenVINS: a downward rangefinder as a horizontal-plane constraint.
+ * Addition to OpenVINS (fork): a downward rangefinder as a horizontal-plane constraint.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -174,9 +174,21 @@ public:
       return;
     const bool valid = std::isfinite(range) && range > _options.min && range <= _options.max;
     _data.emplace_back(time, valid ? range : NAN);
-    while (!_data.empty() && _data.front().first < time - 30.0)
+    // The window prunes the buffer (prune_before); this only bounds it when no updates run (before initialisation)
+    while (!_data.empty() && _data.front().first < time - max_age)
       _data.pop_front();
   }
+
+  /// Drops readings before `time` (IMU clock), keeping the one just before it for interpolation. Called with the
+  /// oldest clone's time after each update, so the buffer always covers the window however long it is.
+  void prune_before(double time) {
+    std::lock_guard<std::mutex> lck(_mtx);
+    while (_data.size() > 1 && _data[1].first <= time)
+      _data.pop_front();
+  }
+
+  /// Readings older than this behind the newest are dropped regardless of the window [s]
+  static constexpr double max_age = 600.0;
 
   /// The range at `time`, interpolated between two valid readings at most max_gap apart.
   bool get(double time, double &range) const {

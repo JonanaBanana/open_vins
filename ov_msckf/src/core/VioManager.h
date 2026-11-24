@@ -83,8 +83,8 @@ public:
   void feed_measurement_camera(const ov_core::CameraData &message) { track_image_and_update(message); }
 
   /**
-   * @brief GeoTNav: feed function for a downward rangefinder (used by the plane constraint if enabled)
-   * @param timestamp Time of the reading, in the range sensor's clock (range_time_offset converts it to the IMU's)
+   * @brief Fork: feed function for a downward rangefinder (used by the plane constraint if enabled)
+   * @param timestamp Time of the reading, in the range sensor's clock (time_offset in relative_config_range converts it to the IMU's)
    * @param range Slant range along the beam [m]; invalid readings are kept as gaps
    */
   void feed_measurement_range(double timestamp, double range) {
@@ -212,27 +212,27 @@ protected:
   /// Our MSCKF feature updater
   std::shared_ptr<UpdaterMSCKF> updaterMSCKF;
 
-  /// GeoTNav: rangefinder readings for the plane constraint (null if it is off)
+  /// Fork: rangefinder readings for the plane constraint (null if it is off)
   std::shared_ptr<RangeBuffer> range_buffer;
-  /// GeoTNav: the range constraint shared by the MSCKF and SLAM updaters (null if it is off)
+  /// Fork: the range constraint shared by the MSCKF and SLAM updaters (null if it is off)
   std::shared_ptr<UpdaterRange> range_updater;
   /// State time (IMU clock) of the last "no range readings" warning
   double range_last_warn_time = -1;
-  /// GeoTNav: tracked frames since the last keyframe (keyframe_every_n_frames); the first one after start is a keyframe
+  /// Fork: tracked frames since the last keyframe (keyframe_every_n_frames); the first one after start is a keyframe
   int frames_since_keyframe = 1 << 20;
-  /// GeoTNav: whether the frame being processed is a keyframe
+  /// Fork: whether the frame being processed is a keyframe
   bool frame_is_keyframe = true;
-  /// GeoTNav: times of the clones that are keyframes (with num_recent_clones)
+  /// Fork: times of the clones that are keyframes (with num_recent_clones)
   std::set<double> keyframe_times;
 
-  /// GeoTNav: whether this tracked frame is a keyframe (counts it)
+  /// Fork: whether this tracked frame is a keyframe (counts it)
   bool is_keyframe();
 
-  /// GeoTNav: keyframes plus the newest frames as clones (keyframe_every_n_frames > 1 and num_recent_clones > 0)
+  /// Fork: keyframes plus the newest frames as clones (keyframe_every_n_frames > 1 and num_recent_clones > 0)
   bool use_recent_clones() const { return params.keyframe_every_n_frames > 1 && params.num_recent_clones > 0; }
 
   /**
-   * @brief GeoTNav: the clone to marginalize after this update, with use_recent_clones: the newest non-keyframe
+   * @brief Fork: the clone to marginalize after this update, with use_recent_clones: the newest non-keyframe
    * older than the num_recent_clones newest clones, else the oldest clone if the window is over max_clones
    * @param time Time of the clone, -1 for none
    * @param oldest Whether it is the oldest clone (its features are then used in the update, as upstream)

@@ -113,7 +113,7 @@ public:
   void visualize_final();
 
   /**
-   * @brief GeoTNav: once the executor has stopped, wait for the background threads (image
+   * @brief Fork: once the executor has stopped, wait for the background threads (image
    * publishing, the last update) so the node and the VIO system can be destroyed safely.
    */
   void stop();
@@ -166,10 +166,10 @@ protected:
 
   // Our subscribers and camera synchronizers
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr sub_imu;
-  /// GeoTNav: the rangefinder for the plane constraint (only when it is enabled; one of the two, by range_msg_type)
+  /// Fork: the rangefinder for the plane constraint (only when it is enabled; one of the two, by msg_type in relative_config_range)
   rclcpp::Subscription<sensor_msgs::msg::Range>::SharedPtr sub_range;
   rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr sub_range_scan;
-  /// GeoTNav: warned once that a LaserScan's first range is not at angle 0
+  /// Fork: warned once that a LaserScan's first range is not at angle 0
   bool range_angle_warned = false;
   std::vector<rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr> subs_cam;
   typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::msg::Image, sensor_msgs::msg::Image> sync_pol;
@@ -194,7 +194,7 @@ protected:
 
   // Thread atomics
   std::atomic<bool> thread_update_running;
-  /// GeoTNav: joined in stop() (upstream detaches it)
+  /// Fork: joined in stop() (upstream detaches it)
   std::thread thread_pub_images;
 
   /// Queue up camera measurements sorted by time and trigger once we have
@@ -207,22 +207,22 @@ protected:
   // Last camera message timestamps we have received (mapped by cam id)
   std::map<int, double> camera_last_timestamp;
 
-  // GeoTNav: IMU stream statistics. Messages stamped at or before the previous one are dropped (the
+  // Fork: IMU stream statistics. Messages stamped at or before the previous one are dropped (the
   // propagator assumes time order); gaps longer than 5 ms are counted, to compare with the recording.
   double imu_last_timestamp = -1;
   long imu_received = 0;
   long imu_out_of_order = 0;
   long imu_gaps = 0;
 
-  // GeoTNav: frame names of the odometry and TF (ROS parameters frame_global, frame_imu), and their rate
+  // Fork: frame names of the odometry and TF (ROS parameters frame_global, frame_imu), and their rate
   // (odom_rate_hz; 0: every IMU sample).
   std::string frame_global = "global";
   std::string frame_imu = "imu";
-  // GeoTNav: the cameras' frames are frame_cam + their index (ROS parameter frame_cam; upstream "cam")
+  // Fork: the cameras' frames are frame_cam + their index (ROS parameter frame_cam; upstream "cam")
   std::string frame_cam = "cam";
   double odom_rate_hz = 0.0;
 
-  /// GeoTNav: the state's time in the IMU clock, which every message and TF is stamped with
+  /// Fork: the state's time in the IMU clock, which every message and TF is stamped with
   builtin_interfaces::msg::Time state_stamp() const;
   double last_odom_time = -1.0;
 

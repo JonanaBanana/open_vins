@@ -121,7 +121,7 @@ bool StaticInitializer::initialize(double &timestamp, Eigen::MatrixXd &covarianc
   // Get rotation with z axis aligned with -g (z_in_G=0,0,1)
   Eigen::Vector3d z_axis = a_avg_2to1 / a_avg_2to1.norm();
   Eigen::Matrix3d Ro;
-  // GeoTNav: with init_heading_axis_in_imu set, the global x axis is that IMU axis made horizontal (the global
+  // Fork: with init_heading_axis_in_imu set, the global x axis is that IMU axis made horizontal (the global
   // yaw is its heading now); otherwise upstream's gram_schmidt.
   double axis_deg = 0.0;
   const bool heading_used = InitializerHelper::gravity_aligned_rotation(z_axis, params.init_heading_axis_in_imu, Ro, &axis_deg);

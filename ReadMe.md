@@ -19,6 +19,121 @@ details on what the system supports.
 * Getting started guide - https://docs.openvins.com/getting-started.html
 * Publication reference - https://pgeneva.com/downloads/papers/Geneva2020ICRA.pdf
 
+## About this fork
+
+This fork adds support for monocular VIO from a downward-looking camera at altitude: a rangefinder constraint that
+fixes the metric scale, a longer sliding window for distant scenes, and a few fixes. Changes are marked `Fork:` in
+the source.
+
+* **ROS 2 only.** The range readings are fed by the ROS 2 node (`run_subscribe_msckf`) and `run_simulation`. The ROS 1
+  wrapper builds but does not subscribe to a rangefinder and lacks the ROS 2 fixes below.
+* **Everything is opt-in.** With none of the options below set, the filter behaves as upstream (checked in simulation:
+  identical estimates on `config/rpng_sim`).
+* **Example:** `config/sim_range_flight` uses all of it (see [Simulation](#simulation)).
+
+### Rangefinder plane constraint
+
+A single-beam rangefinder pointing at the ground fixes the scale of monocular VIO. The ground is modelled as a plane
+perpendicular to gravity: the range at a clone gives the plane's height below the vehicle, and each MSCKF feature,
+assumed to lie on that plane, gets one more row in its update relating the measured slant range to the clone's
+height, attitude and the feature's height. New SLAM features can also be created with the range.
+
+Enable it with `use_range: true` and describe the sensor in a separate file, like the IMU and cameras:
+
+```yaml
+# estimator_config.yaml
+use_range: true
+relative_config_range: "range_chain.yaml"
+```
+
+```yaml
+# range_chain.yaml
+range0:
+  T_imu_range:        # rangefinder frame in the IMU frame (required); the beam is its +x axis (ROS convention)
+    - [ 0.0, 0.0, 1.0, 0.0]   # here: beam along the IMU's -z (down for an IMU with z up)
+    - [ 0.0, 1.0, 0.0, 0.0]   # the translation is the lever arm [m]
+    - [-1.0, 0.0, 0.0, 0.0]
+    - [ 0.0, 0.0, 0.0, 1.0]
+  rostopic: /rangefinder      # required
+  msg_type: range             # range (sensor_msgs/Range, default) or laserscan (sensor_msgs/LaserScan, first range)
+  time_offset: 0.0            # [s] t_imu = t_range + time_offset
+```
+
+Readings outside the message's own limits, or not finite, are treated as gaps. Options in `estimator_config.yaml`:
+
+| Option | Default | Meaning |
+|---|---|---|
+| `range_sigma` | 3.0 | [m] each feature's own deviation from the plane (vegetation, roofs, terrain) |
+| `range_sigma_shared` | 0.0 | [m] error shared by all rows using the same reading (range noise, footprint off the plane). A row's variance is `range_sigma² + N·range_sigma_shared²` with N the rows sharing the reading, so one reading never counts as many independent measurements. 0: rows independent |
+| `range_huber_k` | 3.0 | residuals beyond this many sigmas get a proportionally larger sigma (bounded influence) |
+| `range_min`, `range_max` | 0, ∞ | [m] valid readings are in (min, max], on top of the message's limits. Set `range_max` below a "no return" value if the sensor reports one as a range |
+| `range_max_tilt_deg` | 60 | no rows when the beam is tilted further from vertical |
+| `range_max_gap` | 0.1 | [s] largest gap between the two readings interpolated at a clone's time |
+| `range_min_height` | 0.0 | [m] no rows below this height above the plane (take-off, landing) |
+| `range_min_parallax` | 0.05 | no range row for a feature with less parallax (baseline / distance); its image rows are kept |
+| `range_slam_init` | true | create SLAM features with the range: from all image observations plus a range row, or, with too little parallax, on the plane from one bearing and the range |
+| `range_outlier_max_dev` | 0.0 | [m] drop a reading whose ground height differs by more than this from the median of the window's other readings (short returns off trees, roofs). 0: off |
+
+Requirements and limits:
+
+* `feat_rep_msckf: GLOBAL_3D` is required (start-up error otherwise). `range_slam_init` has no effect with
+  `feat_rep_slam: ANCHORED_INVERSE_DEPTH_SINGLE`.
+* The camera should see the ground the beam ranges to (a start-up warning is printed if a camera looks away from the
+  beam). A beam tilted beyond `range_max_tilt_deg` is ignored, so a sensor that does not point down has no effect.
+* **Sloped terrain.** Range and vision cannot tell a ground slope from a tilt of the vehicle. On a slope the filter
+  tilts by about the slope and the height drifts with the distance flown (in simulation, about 10 m over a 300 s
+  flight on a 3 % slope). Flat or gently undulating terrain is fine. Absolute altitude (a terrain map, a global
+  reference) is out of scope and belongs downstream of the odometry; such a layer should not treat the odometry's
+  height and the rangefinder as independent.
+* A `[RANGE]` line is logged periodically (rows used, residuals, rows per reading, rejected readings), and a warning
+  every 10 s if no readings arrive near the state's time (topic, message type or clock offset).
+
+### Keyframe window
+
+Distant scenes need a long baseline, but tracking and initialisation need a high frame rate. With
+`keyframe_every_n_frames: n` (> 1), the window of `max_clones` keeps clones older than the newest
+`num_recent_clones` only at keyframes (every n-th tracked frame), so it spans a longer time:
+
+| Option | Default | Meaning |
+|---|---|---|
+| `keyframe_every_n_frames` | 1 | every n-th tracked frame is a keyframe. 1: every frame (upstream) |
+| `num_recent_clones` | 0 | the newest frames kept as clones whether or not they are keyframes; every frame is then updated, and a non-keyframe leaving this part is marginalized with its observations. 0: only keyframes are propagated, cloned and updated. At most `max_clones - 2` |
+
+For example `max_clones: 15`, `keyframe_every_n_frames: 6`, `num_recent_clones: 5` at 15 Hz gives an update every
+frame and a window of about 4.3 s. For distant features, also raise the triangulation limits (`fi_max_dist`,
+`fi_max_cond_number`): the defaults reject features about 100 m away.
+
+### Other options
+
+* `init_heading_axis_in_imu: [x, y, z]` (unset: upstream): the global frame's x axis is this IMU axis (e.g. the
+  vehicle's forward) made horizontal at initialisation, static or dynamic.
+* `print_track_stats: true`: one `[TRACK]` line per update (tracks, features used, SLAM features, speed).
+* ROS 2 parameters: `frame_global`, `frame_imu`, `frame_cam` (frame names; defaults as upstream) and `odom_rate_hz`
+  (limit the odometry and TF rate; 0: every IMU sample).
+
+### Fixes
+
+* Published odometry: the first IMU-rate pose after each update was `calib_dt_CAMtoIMU` old
+  (`Propagator::fast_state_propagate` mixed the camera and IMU clocks). The filter's estimate is unchanged.
+* ROS 2 wrapper: the IMU thread read a dangling reference to the callback's message; shutdown order and thread joins
+  (crashes at exit); a deep IMU queue (1000) for bursty drivers; out-of-order IMU samples dropped; odometry, TF,
+  images and point clouds stamped with the state's time instead of `now()`.
+* Simulator: points beyond the lens model's valid angle (where a wide-angle distortion model folds back) were
+  projected into the image at wrong positions. This changes simulated measurements for strongly distorted cameras.
+
+### Simulation
+
+`run_simulation` can test the rangefinder against ground truth:
+
+* `sim_ground_plane: true`: features are generated on a ground plane (`sim_ground_height`, `sim_ground_gradient`,
+  `sim_ground_roughness`, and hills `sim_ground_hills: [amplitude, wavelength]`) instead of at random depths.
+* With `use_range: true`, a simulated rangefinder along `T_imu_range` (`sim_range_freq`, `sim_range_sigma`, and
+  short returns with `sim_range_outlier_prob`, `sim_range_outlier_max`).
+* `ov_data/sim/generate_flight.py` generates a fixed-altitude figure-eight flight (with an optional hover);
+  `flight_100m.txt` and `flight_100m_hover.txt` are included.
+* `config/sim_range_flight` flies `flight_100m.txt` with a downward fisheye camera and rangefinder. Run it from the
+  workspace root (`sim_traj_path` is relative).
+
 ## News / Events
 
 * **May 11, 2023** - Inertial intrinsic support released as part of v2.7 along with a few bug fixes and improvements to stereo KLT tracking. Please check out the [release page](https://github.com/rpng/open_vins/releases/tag/v2.7) for details.

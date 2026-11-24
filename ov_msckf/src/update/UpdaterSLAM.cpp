@@ -120,7 +120,7 @@ void UpdaterSLAM::delayed_init(std::shared_ptr<State> state, std::vector<std::sh
     clones_cam.insert({clone_calib.first, clones_cami});
   }
 
-  // GeoTNav: whether features can be created with the rangefinder (range_slam_init; not for aruco tags or the
+  // Fork: whether features can be created with the rangefinder (range_slam_init; not for aruco tags or the
   // single inverse depth representation, which is initialised as a depth only)
   const bool range_init = _range != nullptr && state->_options.feat_rep_slam != LandmarkRepresentation::Representation::ANCHORED_INVERSE_DEPTH_SINGLE;
   auto use_range_for = [&](const std::shared_ptr<Feature> &f) { return range_init && (int)f->featid >= state->_options.max_aruco_features; };
@@ -145,7 +145,7 @@ void UpdaterSLAM::delayed_init(std::shared_ptr<State> state, std::vector<std::sh
     }
     triangulated[(*it1)->featid] = success_tri && success_refine;
 
-    // Remove the feature if not a success (GeoTNav: unless the rangefinder can place it)
+    // Remove the feature if not a success (Fork: unless the rangefinder can place it)
     if ((!success_tri || !success_refine) && !use_range_for(*it1)) {
       (*it1)->to_delete = true;
       it1 = feature_vec.erase(it1);
@@ -155,7 +155,7 @@ void UpdaterSLAM::delayed_init(std::shared_ptr<State> state, std::vector<std::sh
   }
   rT2 = boost::posix_time::microsec_clock::local_time();
 
-  // GeoTNav: how each feature is created. UPSTREAM: triangulation and all image observations. FULL: the same plus a
+  // Fork: how each feature is created. UPSTREAM: triangulation and all image observations. FULL: the same plus a
   // range row (triangulated with enough parallax). PLANE: on the plane at the measured height along the newest
   // bearing at the reading's clone, from that bearing and the range alone (exactly determined, no state update).
   enum class Mode { UPSTREAM, FULL, PLANE };
@@ -270,7 +270,7 @@ void UpdaterSLAM::delayed_init(std::shared_ptr<State> state, std::vector<std::sh
     // Get the Jacobian for this feature
     UpdaterHelper::get_feature_jacobian_full(state, feat, H_f, H_x, res, Hx_order);
 
-    // GeoTNav: append the range row (FULL with the parallax / residual gates, PLANE without: it was built on the
+    // Fork: append the range row (FULL with the parallax / residual gates, PLANE without: it was built on the
     // plane from this one bearing). A PLANE feature that gets no row cannot be initialised from one bearing.
     const Mode m = (mode.count(feat.featid) > 0) ? mode.at(feat.featid) : Mode::UPSTREAM;
     if (m != Mode::UPSTREAM) {
@@ -333,7 +333,7 @@ void UpdaterSLAM::delayed_init(std::shared_ptr<State> state, std::vector<std::sh
         ((int)feat.featid < state->_options.max_aruco_features) ? _options_aruco.sigma_pix_sq : _options_slam.sigma_pix_sq;
     Eigen::MatrixXd R = sigma_pix_sq * Eigen::MatrixXd::Identity(res.rows(), res.rows());
 
-    // GeoTNav: on the plane, the bearing (2 rows) and the range (1 row) determine the feature exactly: give it its
+    // Fork: on the plane, the bearing (2 rows) and the range (1 row) determine the feature exactly: give it its
     // uncertainty without updating the rest of the state
     if (m == Mode::PLANE) {
       if (std::abs(H_f.determinant()) < 1e-12) {

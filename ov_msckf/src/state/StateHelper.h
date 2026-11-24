@@ -224,7 +224,7 @@ public:
   static void marginalize_old_clone(std::shared_ptr<State> state);
 
   /**
-   * @brief GeoTNav: marginalize the clone at the given time (any clone in the window, e.g. a non-keyframe)
+   * @brief Fork: marginalize the clone at the given time (any clone in the window, e.g. a non-keyframe)
    * @param state Pointer to state
    * @param timestamp Time of the clone, which must be in the state
    */

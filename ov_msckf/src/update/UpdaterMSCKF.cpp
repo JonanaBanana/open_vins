@@ -194,7 +194,7 @@ void UpdaterMSCKF::update(std::shared_ptr<State> state, std::vector<std::shared_
     ct_meas += res.rows();
   };
 
-  // GeoTNav: features that passed the visual chi2 test and have a range row. Their rows are whitened and
+  // Fork: features that passed the visual chi2 test and have a range row. Their rows are whitened and
   // the features projected out only after the loop, once it is known how many rows share each reading.
   struct RangeFeature {
     Eigen::MatrixXd H_f, H_x;
@@ -241,7 +241,7 @@ void UpdaterMSCKF::update(std::shared_ptr<State> state, std::vector<std::shared_
     // Get the Jacobian for this feature
     UpdaterHelper::get_feature_jacobian_full(state, feat, H_f, H_x, res, Hx_order);
 
-    // GeoTNav: keep the unprojected system for the range row, which is added only after the visual rows
+    // Fork: keep the unprojected system for the range row, which is added only after the visual rows
     // pass the chi2 test below (so a wrong scale cannot make every feature fail it).
     const bool use_range = _range != nullptr && feat.feat_representation == LandmarkRepresentation::Representation::GLOBAL_3D;
     Eigen::MatrixXd H_f_full, H_x_full;
@@ -283,7 +283,7 @@ void UpdaterMSCKF::update(std::shared_ptr<State> state, std::vector<std::shared_
       continue;
     }
 
-    // GeoTNav: the visual rows passed; if the feature has a range row, keep its unprojected system for later.
+    // Fork: the visual rows passed; if the feature has a range row, keep its unprojected system for later.
     UpdaterRange::Row row;
     if (use_range && _range->compute_row(state, (*it2)->timestamps, (*it2)->p_FinG, Hx_order, true, row)) {
       range_features.push_back({H_f_full, H_x_full, res_full, Hx_order, row});
@@ -296,7 +296,7 @@ void UpdaterMSCKF::update(std::shared_ptr<State> state, std::vector<std::shared_
     it2++;
   }
 
-  // GeoTNav: count the range rows per reading, append each feature's range row, project the feature out of
+  // Fork: count the range rows per reading, append each feature's range row, project the feature out of
   // its visual and range rows together, and append the result.
   if (!range_features.empty()) {
     std::map<double, int> n_per_reading;
