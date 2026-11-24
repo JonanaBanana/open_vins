@@ -27,8 +27,8 @@
 
 #include "feat/FeatureInitializerOptions.h"
 
-#include "RangePlane.h"
 #include "UpdaterOptions.h"
+#include "UpdaterRange.h"
 
 namespace ov_core {
 class Feature;
@@ -73,17 +73,14 @@ public:
   void update(std::shared_ptr<State> state, std::vector<std::shared_ptr<ov_core::Feature>> &feature_vec);
 
   /**
-   * @brief GeoTNav: enable the rangefinder plane constraint.
+   * @brief GeoTNav: enable the rangefinder plane constraint (UpdaterRange, shared with the SLAM updater).
    *
-   * Each feature that passes the (visual) chi2 test gets one more row before it is projected out: the
-   * rangefinder's slant range at the newest clone it is seen from, predicted as the distance along the
-   * beam to the horizontal plane through the feature, (p_I,z - p_F,z) / cos(tilt). That ties the
-   * features' depths, and so the scale, to a metric height.
+   * Each feature that passes the (visual) chi2 test and has enough parallax gets one more row before it is
+   * projected out: the rangefinder's slant range at the newest clone it is seen from, predicted as the distance
+   * along the beam to the horizontal plane through the feature. That ties the features' depths, and so the scale,
+   * to a metric height. Only for GLOBAL_3D features.
    */
-  void set_range(std::shared_ptr<RangeBuffer> buffer, const RangeOptions &options) {
-    _range_buffer = buffer;
-    _range_options = options;
-  }
+  void set_range(std::shared_ptr<UpdaterRange> range) { _range = range; }
 
   /// GeoTNav: how the last update's features fared (for the per-frame [TRACK] log line)
   struct Stats {
@@ -94,45 +91,8 @@ public:
   Stats last_stats;
 
 protected:
-  /// GeoTNav: one feature's range row before whitening (see compute_range_row)
-  struct RangeRow {
-    double clone_time = -1.0;      // clone (camera clock) whose reading is used: rows sharing it share the reading
-    size_t col = 0;                // the clone's first column (orientation, then position) in the feature's H_x
-    double residual = 0.0;         // measured minus predicted slant range [m]
-    Eigen::RowVector3d dh_dtheta;  // w.r.t. the clone's orientation error
-    double dh_dpz = 0.0;           // w.r.t. the clone's z position
-    double dh_dpfz = 0.0;          // w.r.t. the feature's z position
-    double cos_tilt = 1.0;         // beam's tilt from vertical
-  };
-
-  /**
-   * @brief GeoTNav: the range row for a feature: false if no valid range, or the beam is too tilted or too
-   * low. Only for GLOBAL_3D features (H_f's columns are p_FinG).
-   */
-  bool compute_range_row(std::shared_ptr<State> state, const std::shared_ptr<ov_core::Feature> &feature,
-                         const std::vector<std::shared_ptr<ov_type::Type>> &Hx_order, RangeRow &row);
-
-  /**
-   * @brief GeoTNav: append a range row to a feature's (unprojected) system, whitened to the pixel noise.
-   * Its standard deviation is sqrt(sigma^2 + n_shared * sigma_shared^2), with a Huber-type clamp beyond
-   * huber_k of it.
-   */
-  void append_range_row(const RangeRow &row, int n_shared, Eigen::MatrixXd &H_f, Eigen::MatrixXd &H_x, Eigen::VectorXd &res);
-
-  /// GeoTNav: rangefinder readings (null: the constraint is off) and options
-  std::shared_ptr<RangeBuffer> _range_buffer;
-  RangeOptions _range_options;
-
-  /// GeoTNav: statistics of the range rows, logged periodically
-  long _range_rows = 0;
-  long _range_huber = 0;
-  long _range_missing = 0;
-  double _range_res_sum = 0.0;
-  double _range_res_sq = 0.0;
-  double _range_bin_sum[4] = {0, 0, 0, 0};  // whole run, by tilt
-  long _range_bin_n[4] = {0, 0, 0, 0};
-  long _range_shared_sum = 0;  // sum over rows of the rows sharing their reading (window, as the residuals)
-  int _range_shared_max = 0;   // the most rows sharing one reading in one update (window)
+  /// GeoTNav: the rangefinder plane constraint (null: off)
+  std::shared_ptr<UpdaterRange> _range;
 
   /// Options used during update
   UpdaterOptions _options;

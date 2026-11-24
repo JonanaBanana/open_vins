@@ -61,6 +61,21 @@ struct RangeOptions {
   double sigma_shared = 0.0;
   /// Residuals beyond huber_k sigmas get a proportionally larger sigma (bounded influence)
   double huber_k = 3.0;
+  /// No range row (the feature's image rows are kept) if the feature's parallax is below this: the largest
+  /// distance between the clones it is seen from over its distance. Its triangulated depth is then unreliable, and
+  /// a small rotation can satisfy the range row as well as a depth change can. 0: no limit.
+  double min_parallax = 0.05;
+  /// Create SLAM features with the range: if triangulated with at least min_parallax, from all their image
+  /// observations plus a range row; otherwise (or if triangulation fails) on the plane, from the newest bearing and
+  /// the range alone (exactly determined: the feature gets its uncertainty, the rest of the state is not updated).
+  /// Off: upstream (triangulation only). Not for the single inverse depth representation.
+  bool slam_init = true;
+  /// A reading is not used if the ground height under its beam (clone height minus the vertical part of the
+  /// range) differs by more than this [m] from the median of the other clones' readings in the window: a short
+  /// return off a tree, roof or bird. A change of surface that lasts longer than about half the window becomes the
+  /// median and is used. The readings are compared with each other, not with the features, so a wrong scale does
+  /// not reject them. The feature then uses the next older clone's reading. 0: off.
+  double outlier_max_dev = 0.0;
   /// Valid ranges are in (min, max] [m], on top of the message's own limits. Default: no limits beyond the
   /// message's. Set max below a sensor's "no return" value if it reports one as a range.
   double min = 0.0;
@@ -106,6 +121,9 @@ struct RangeOptions {
       parser->parse_config("range_sigma", sigma, false);
       parser->parse_config("range_sigma_shared", sigma_shared, false);
       parser->parse_config("range_huber_k", huber_k, false);
+      parser->parse_config("range_min_parallax", min_parallax, false);
+      parser->parse_config("range_slam_init", slam_init, false);
+      parser->parse_config("range_outlier_max_dev", outlier_max_dev, false);
       parser->parse_config("range_min", min, false);
       parser->parse_config("range_max", max, false);
       parser->parse_config("range_max_tilt_deg", max_tilt_deg, false);
@@ -120,6 +138,10 @@ struct RangeOptions {
                "beam [%.2f %.2f %.2f] from [%.3f %.3f %.3f] m in the IMU frame, time offset %.4f s\n",
                topic.c_str(), msg_type.c_str(), sigma, sigma_shared, min, max, max_tilt_deg, min_height, dir_in_imu(0), dir_in_imu(1),
                dir_in_imu(2), p_in_imu(0), p_in_imu(1), p_in_imu(2), time_offset);
+    PRINT_INFO("RANGE PLANE: rows skipped below %.1f %% parallax; SLAM features from the range %s; outlier readings %s\n",
+               100.0 * min_parallax, slam_init ? "on" : "off",
+               outlier_max_dev > 0.0 ? ("beyond " + std::to_string(outlier_max_dev).substr(0, 4) + " m from the window's median").c_str()
+                                     : "kept");
   }
 };
 

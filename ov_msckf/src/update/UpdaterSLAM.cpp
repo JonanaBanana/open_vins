@@ -33,6 +33,9 @@
 #include "utils/print.h"
 #include "utils/quat_ops.h"
 
+#include <map>
+#include <unordered_map>
+
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/math/distributions/chi_squared.hpp>
 
@@ -117,7 +120,13 @@ void UpdaterSLAM::delayed_init(std::shared_ptr<State> state, std::vector<std::sh
     clones_cam.insert({clone_calib.first, clones_cami});
   }
 
+  // GeoTNav: whether features can be created with the rangefinder (range_slam_init; not for aruco tags or the
+  // single inverse depth representation, which is initialised as a depth only)
+  const bool range_init = _range != nullptr && state->_options.feat_rep_slam != LandmarkRepresentation::Representation::ANCHORED_INVERSE_DEPTH_SINGLE;
+  auto use_range_for = [&](const std::shared_ptr<Feature> &f) { return range_init && (int)f->featid >= state->_options.max_aruco_features; };
+
   // 3. Try to triangulate all MSCKF or new SLAM features that have measurements
+  std::unordered_map<size_t, bool> triangulated;
   auto it1 = feature_vec.begin();
   while (it1 != feature_vec.end()) {
 
@@ -134,9 +143,10 @@ void UpdaterSLAM::delayed_init(std::shared_ptr<State> state, std::vector<std::sh
     if (initializer_feat->config().refine_features) {
       success_refine = initializer_feat->single_gaussnewton(*it1, clones_cam);
     }
+    triangulated[(*it1)->featid] = success_tri && success_refine;
 
-    // Remove the feature if not a success
-    if (!success_tri || !success_refine) {
+    // Remove the feature if not a success (GeoTNav: unless the rangefinder can place it)
+    if ((!success_tri || !success_refine) && !use_range_for(*it1)) {
       (*it1)->to_delete = true;
       it1 = feature_vec.erase(it1);
       continue;
@@ -144,6 +154,82 @@ void UpdaterSLAM::delayed_init(std::shared_ptr<State> state, std::vector<std::sh
     it1++;
   }
   rT2 = boost::posix_time::microsec_clock::local_time();
+
+  // GeoTNav: how each feature is created. UPSTREAM: triangulation and all image observations. FULL: the same plus a
+  // range row (triangulated with enough parallax). PLANE: on the plane at the measured height along the newest
+  // bearing at the reading's clone, from that bearing and the range alone (exactly determined, no state update).
+  enum class Mode { UPSTREAM, FULL, PLANE };
+  std::unordered_map<size_t, Mode> mode;
+  std::unordered_map<size_t, double> reading_time;
+  std::map<double, int> n_per_reading;
+  auto it_plan = feature_vec.begin();
+  while (it_plan != feature_vec.end()) {
+    const std::shared_ptr<Feature> &f = *it_plan;
+    Mode m = Mode::UPSTREAM;
+    double clone_time = -1.0, range = 0.0, z_plane = 0.0;
+    const bool has_plane = use_range_for(f) && _range->find_reading(state, f->timestamps, clone_time, range) &&
+                           _range->plane_height(state, clone_time, range, z_plane);
+    if (has_plane) {
+      if (triangulated.at(f->featid) && _range->parallax(state, f->timestamps, f->p_FinG) >= _range->options().min_parallax) {
+        m = Mode::FULL;
+      } else {
+        // On the plane: the bearing at the reading's clone meets z = z_plane in front of the camera
+        // Find the observation first; the feature's maps are only changed after the loop over them
+        bool placed = false;
+        size_t cam_id = 0;
+        Eigen::VectorXf uv, uvn;
+        Eigen::Vector3d p_F = Eigen::Vector3d::Zero();
+        for (const auto &pair : f->timestamps) {
+          for (size_t k = 0; k < pair.second.size() && !placed; k++) {
+            if (pair.second.at(k) != clone_time)
+              continue;
+            FeatureInitializer::ClonePose &cp = clones_cam.at(pair.first).at(clone_time);
+            const Eigen::Vector3d bearing(f->uvs_norm.at(pair.first).at(k)(0), f->uvs_norm.at(pair.first).at(k)(1), 1.0);
+            const Eigen::Vector3d dir_inG = cp.Rot().transpose() * bearing;
+            const double s = (z_plane - cp.pos()(2)) / dir_inG(2);
+            if (s > 0.0) {
+              cam_id = pair.first;
+              uv = f->uvs.at(pair.first).at(k);
+              uvn = f->uvs_norm.at(pair.first).at(k);
+              p_F = cp.pos() + s * dir_inG;
+              placed = true;
+            }
+          }
+          if (placed)
+            break;
+        }
+        if (placed) {
+          // Keep only this observation; anchor the feature at it
+          FeatureInitializer::ClonePose &cp = clones_cam.at(cam_id).at(clone_time);
+          f->timestamps.clear();
+          f->uvs.clear();
+          f->uvs_norm.clear();
+          f->timestamps[cam_id] = {clone_time};
+          f->uvs[cam_id] = {uv};
+          f->uvs_norm[cam_id] = {uvn};
+          f->p_FinG = p_F;
+          f->anchor_cam_id = (int)cam_id;
+          f->anchor_clone_timestamp = clone_time;
+          f->p_FinA = cp.Rot() * (p_F - cp.pos());
+          m = Mode::PLANE;
+        } else if (!triangulated.at(f->featid)) {
+          f->to_delete = true;
+          it_plan = feature_vec.erase(it_plan);
+          continue;
+        }
+      }
+    } else if (!triangulated.at(f->featid)) {
+      f->to_delete = true;
+      it_plan = feature_vec.erase(it_plan);
+      continue;
+    }
+    mode[f->featid] = m;
+    if (m != Mode::UPSTREAM) {
+      reading_time[f->featid] = clone_time;
+      n_per_reading[clone_time]++;
+    }
+    it_plan++;
+  }
 
   // 4. Compute linear system for each feature, nullspace project, and reject
   auto it2 = feature_vec.begin();
@@ -183,6 +269,26 @@ void UpdaterSLAM::delayed_init(std::shared_ptr<State> state, std::vector<std::sh
 
     // Get the Jacobian for this feature
     UpdaterHelper::get_feature_jacobian_full(state, feat, H_f, H_x, res, Hx_order);
+
+    // GeoTNav: append the range row (FULL with the parallax / residual gates, PLANE without: it was built on the
+    // plane from this one bearing). A PLANE feature that gets no row cannot be initialised from one bearing.
+    const Mode m = (mode.count(feat.featid) > 0) ? mode.at(feat.featid) : Mode::UPSTREAM;
+    if (m != Mode::UPSTREAM) {
+      UpdaterRange::Row row;
+      const bool has_row = _range->compute_row(state, feat.timestamps, (*it2)->p_FinG, Hx_order, m == Mode::FULL, row);
+      if (has_row) {
+        Eigen::MatrixXd dpfg_dlambda;
+        std::vector<Eigen::MatrixXd> dpfg_dx;
+        std::vector<std::shared_ptr<Type>> dpfg_dx_order;
+        UpdaterHelper::get_feature_jacobian_representation(state, feat, dpfg_dlambda, dpfg_dx, dpfg_dx_order);
+        _range->append_row(row, n_per_reading.at(reading_time.at(feat.featid)), _options_slam.sigma_pix, Hx_order, dpfg_dlambda, dpfg_dx,
+                           dpfg_dx_order, H_f, H_x, res);
+      } else if (m == Mode::PLANE) {
+        (*it2)->to_delete = true;
+        it2 = feature_vec.erase(it2);
+        continue;
+      }
+    }
 
     // If we are doing the single feature representation, then we need to remove the bearing portion
     // To do so, we project the bearing portion onto the state and depth Jacobians and the residual.
@@ -227,11 +333,29 @@ void UpdaterSLAM::delayed_init(std::shared_ptr<State> state, std::vector<std::sh
         ((int)feat.featid < state->_options.max_aruco_features) ? _options_aruco.sigma_pix_sq : _options_slam.sigma_pix_sq;
     Eigen::MatrixXd R = sigma_pix_sq * Eigen::MatrixXd::Identity(res.rows(), res.rows());
 
+    // GeoTNav: on the plane, the bearing (2 rows) and the range (1 row) determine the feature exactly: give it its
+    // uncertainty without updating the rest of the state
+    if (m == Mode::PLANE) {
+      if (std::abs(H_f.determinant()) < 1e-12) {
+        (*it2)->to_delete = true;
+        it2 = feature_vec.erase(it2);
+        continue;
+      }
+      StateHelper::initialize_invertible(state, landmark, Hx_order, H_x, H_f, R, res);
+      state->_features_SLAM.insert({(*it2)->featid, landmark});
+      _range->n_slam_plane++;
+      (*it2)->to_delete = true;
+      it2++;
+      continue;
+    }
+
     // Try to initialize, delete new pointer if we failed
     double chi2_multipler =
         ((int)feat.featid < state->_options.max_aruco_features) ? _options_aruco.chi2_multipler : _options_slam.chi2_multipler;
     if (StateHelper::initialize(state, landmark, Hx_order, H_x, H_f, R, res, chi2_multipler)) {
       state->_features_SLAM.insert({(*it2)->featid, landmark});
+      if (m == Mode::FULL)
+        _range->n_slam_full++;
       (*it2)->to_delete = true;
       it2++;
     } else {
@@ -488,14 +612,16 @@ void UpdaterSLAM::change_anchors(std::shared_ptr<State> state) {
   // Get the marginalization timestep, and change the anchor for any feature seen from it
   // NOTE: for now we have anchor the feature in the same camera as it is before
   // NOTE: this also does not change the representation of the feature at all right now
-  double marg_timestep = state->margtimestep();
+  change_anchors(state, state->margtimestep());
+}
+
+void UpdaterSLAM::change_anchors(std::shared_ptr<State> state, double marg_timestep) {
   for (auto &f : state->_features_SLAM) {
     // Skip any features that are in the global frame
     if (f.second->_feat_representation == LandmarkRepresentation::Representation::GLOBAL_3D ||
         f.second->_feat_representation == LandmarkRepresentation::Representation::GLOBAL_FULL_INVERSE_DEPTH)
       continue;
     // Else lets see if it is anchored in the clone that will be marginalized
-    assert(marg_timestep <= f.second->_anchor_clone_timestamp);
     if (f.second->_anchor_clone_timestamp == marg_timestep) {
       perform_anchor_change(state, f.second, state->_timestamp, f.second->_anchor_cam_id);
     }

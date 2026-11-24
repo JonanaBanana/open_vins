@@ -1,14 +1,7 @@
 %YAML:1.0 # need to specify the file type at the top!
-# GeoTNav: the baseline (geotnav_ircam_wide) with the rangefinder plane constraint on; see the end.
-# OpenVINS (ov_msckf) on ircam_wide (thermal, 640x512, 30 Hz, h264) and /imu_apps, monocular.
-# Started from config/euroc_mav. Changes for the IR camera at ~100 m above flat ground:
-# - Tracking at 15 Hz with 15 clones, so the window spans ~1 s (~10 m at cruise speed), for
-#   parallax on points ~100 m away.
-# - CLAHE and a lower FAST threshold for the thermal image's low contrast; a 1.5 px measurement
-#   noise for the h264 artefacts.
-# - Camera intrinsics are fixed (a flat scene cannot calibrate them); extrinsics and the time offset
-#   are refined from rough values.
-# - Static initialisation: the flights start standing on the ground.
+# Simulated 100 m flight over flat ground (run_simulation) to test the rangefinder plane constraint against
+# ground truth. Monocular downward camera (640x512, equidistant), IMU noise as measured in flight, downward
+# rangefinder; estimator settings as config/geotnav_ircam_wide_range. Run from the workspace root (sim_traj_path).
 
 verbosity: "INFO" # ALL, DEBUG, INFO, WARNING, ERROR, SILENT
 
@@ -89,10 +82,11 @@ filepath_gt: "/tmp/ov_groundtruth.txt"
 # ==================================================================
 # ==================================================================
 
-# Triangulation limits. The defaults (max_dist 60 m, depth/baseline 40, condition 1e4) reject every
-# feature ~100 m below, and with no visual update the filter runs on the IMU alone.
+# Triangulation limits. The defaults (max_dist 60 m, condition 1e4) reject every feature ~100 m below, and with
+# no visual update the filter runs on the IMU alone. The depth/baseline limit stays at the default 40: features
+# with less parallax are dropped (in simulation, keeping them down to 200 made the attitude far worse).
 fi_max_dist: 1000
-fi_max_baseline: 200
+fi_max_baseline: 40
 fi_max_cond_number: 50000
 
 use_klt: true
@@ -102,7 +96,11 @@ grid_x: 5
 grid_y: 4
 min_px_dist: 15
 knn_ratio: 0.70
-track_frequency: 30.0
+track_frequency: 15.0
+# Every frame is tracked, propagated and updated at 15 Hz. The window (max_clones: 15) holds the 5 newest frames
+# plus 10 keyframes, one every 6th frame: ~4.3 s of baseline for points ~100 m away, with an update every frame.
+keyframe_every_n_frames: 6
+num_recent_clones: 5
 downsample_cameras: false
 num_opencv_threads: 4
 histogram_method: "HISTOGRAM" # NONE, HISTOGRAM, CLAHE
@@ -134,15 +132,38 @@ relative_config_range: "range_chain.yaml"  # the rangefinder (read only with use
 # config (geotnav_ircam_wide) with the constraint on.
 # ==================================================================
 use_range: true
-range_sigma: 3.0               # [m] per feature: how far it sits off the plane (vegetation, roofs, slopes), near vertical
+range_sigma: 3.0               # [m] per feature: how far it sits off the plane (vegetation, roofs, slopes)
 range_sigma_shared: 3.0        # [m] shared by the rows using one reading (range noise, beam footprint off the plane); 0: independent rows
-range_sigma_tilt_power: 0.0    # sigma / cos(tilt)^p: ~3.3 m at 0 deg to ~10 m at 55 deg against a DTM ray trace; 0: constant
 range_huber_k: 3.0
 range_min: 0.0                 # valid ranges in (min, max]; it reports 250 m without a return
 range_max: 190.0
-range_max_tilt_deg: 60.0
+range_max_tilt_deg: 45.0
 range_max_gap: 0.1             # [s] between the two readings interpolated at a clone's time
 range_min_height: 5.0          # [m] no rows below (take-off, landing: features too close)
-range_plane_init: true          # keep features that fail triangulation by placing them on the plane (flow x range)
-range_plane_init_always: true   # every feature on the plane, triangulated only when it cannot be placed
-range_plane_init_max_ray_deg: 70.0  # largest angle of that ray from vertical
+range_min_parallax: 0.05       # no range row below this baseline / depth (the feature's image rows are kept)
+range_slam_init: true          # create SLAM features with the range (on the plane when parallax is low)
+range_outlier_max_dev: 5.0     # [m] drop a reading whose ground height is this far from the window's median (tree, roof); 0: off
+
+# ==================================================================
+# Simulation (run_simulation): a 100 m flight over flat ground, with the camera, IMU noise and rangefinder
+# above. The filter starts from ground truth. Set use_range: false for the vision-only baseline.
+# ==================================================================
+sim_seed_state_init: 0
+sim_seed_preturb: 0
+sim_seed_measurements: 0
+sim_do_perturbation: false
+sim_traj_path: "src/open_vins/ov_data/sim/flight_100m.txt"
+sim_distance_threshold: 1.0
+sim_freq_cam: 15
+sim_freq_imu: 400
+sim_min_feature_gen_dist: 5.0
+sim_max_feature_gen_dist: 400.0
+sim_ground_plane: true
+sim_ground_height: 0.0
+sim_ground_gradient: [ 0.0, 0.0 ]
+sim_ground_roughness: 1.0
+sim_ground_hills: [ 0.0, 300.0 ]  # [amplitude, wavelength] [m] of hills on the plane; amplitude 0: none
+sim_range_freq: 20.0
+sim_range_sigma: 0.1
+sim_range_outlier_prob: 0.0
+sim_range_outlier_max: 0.0

@@ -95,6 +95,20 @@ public:
   bool get_next_imu(double &time_imu, Eigen::Vector3d &wm, Eigen::Vector3d &am);
 
   /**
+   * @brief GeoTNav: the next simulated rangefinder reading up to a time, if any (sim_range_freq).
+   *
+   * The distance along the beam (range0 T_imu_range) to the ground plane (sim_ground_*), with noise
+   * (sim_range_sigma) and objects above the ground (sim_range_outlier_*). NaN if the beam does not reach the
+   * ground (pointing above it).
+   *
+   * @param time_until Latest IMU-clock time to simulate up to (call again until it returns false)
+   * @param time_range Time of the reading, in the rangefinder's clock (t_imu = t_range + range0 time_offset)
+   * @param range Slant range [m]
+   * @return True if there is a reading at or before time_until
+   */
+  bool get_next_range(double time_until, double &time_range, double &range);
+
+  /**
    * @brief Gets the next inertial reading if we have one.
    * @param time_cam Time that this measurement occured at
    * @param camids Camera ids that the corresponding vectors match
@@ -188,6 +202,16 @@ protected:
 
   /// Last time we had an CAMERA reading
   double timestamp_last_cam;
+
+  /// GeoTNav: last time (IMU clock) we had a rangefinder reading, and its random generator
+  double timestamp_last_range;
+  std::mt19937 gen_meas_range;
+
+  /**
+   * @brief GeoTNav: distance along a ray to the ground plane raised by dz, or a negative value if it does not
+   * reach it (sim_ground_height + sim_ground_gradient . (x, y) + dz, plus sim_ground_hills)
+   */
+  double ray_to_ground(const Eigen::Vector3d &origin, const Eigen::Vector3d &dir, double dz) const;
 
   /// Our running acceleration bias
   Eigen::Vector3d true_bias_accel = Eigen::Vector3d::Zero();

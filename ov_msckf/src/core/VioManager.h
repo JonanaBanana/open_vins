@@ -29,6 +29,7 @@
 #include <fstream>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 
 #include "VioManagerOptions.h"
@@ -49,6 +50,7 @@ class State;
 class StateHelper;
 class UpdaterMSCKF;
 class UpdaterSLAM;
+class UpdaterRange;
 class UpdaterZeroVelocity;
 class Propagator;
 
@@ -212,8 +214,33 @@ protected:
 
   /// GeoTNav: rangefinder readings for the plane constraint (null if it is off)
   std::shared_ptr<RangeBuffer> range_buffer;
+  /// GeoTNav: the range constraint shared by the MSCKF and SLAM updaters (null if it is off)
+  std::shared_ptr<UpdaterRange> range_updater;
   /// State time (IMU clock) of the last "no range readings" warning
   double range_last_warn_time = -1;
+  /// GeoTNav: tracked frames since the last keyframe (keyframe_every_n_frames); the first one after start is a keyframe
+  int frames_since_keyframe = 1 << 20;
+  /// GeoTNav: whether the frame being processed is a keyframe
+  bool frame_is_keyframe = true;
+  /// GeoTNav: times of the clones that are keyframes (with num_recent_clones)
+  std::set<double> keyframe_times;
+
+  /// GeoTNav: whether this tracked frame is a keyframe (counts it)
+  bool is_keyframe();
+
+  /// GeoTNav: keyframes plus the newest frames as clones (keyframe_every_n_frames > 1 and num_recent_clones > 0)
+  bool use_recent_clones() const { return params.keyframe_every_n_frames > 1 && params.num_recent_clones > 0; }
+
+  /**
+   * @brief GeoTNav: the clone to marginalize after this update, with use_recent_clones: the newest non-keyframe
+   * older than the num_recent_clones newest clones, else the oldest clone if the window is over max_clones
+   * @param time Time of the clone, -1 for none
+   * @param oldest Whether it is the oldest clone (its features are then used in the update, as upstream)
+   */
+  void choose_marg_clone(double &time, bool &oldest);
+
+  /// State time of the last SLAM feature height log
+  double range_last_slam_log = -1;
 
   /// Our SLAM/ARUCO feature updater
   std::shared_ptr<UpdaterSLAM> updaterSLAM;

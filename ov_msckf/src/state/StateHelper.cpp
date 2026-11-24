@@ -628,6 +628,13 @@ void StateHelper::marginalize_old_clone(std::shared_ptr<State> state) {
   }
 }
 
+void StateHelper::marginalize_clone(std::shared_ptr<State> state, double timestamp) {
+  std::lock_guard<std::mutex> lock(state->_mutex_state);
+  assert(state->_clones_IMU.find(timestamp) != state->_clones_IMU.end());
+  StateHelper::marginalize(state, state->_clones_IMU.at(timestamp));
+  state->_clones_IMU.erase(timestamp);
+}
+
 void StateHelper::marginalize_slam(std::shared_ptr<State> state) {
   // Remove SLAM features that have their marginalization flag set
   // We also check that we do not remove any aruoctag landmarks

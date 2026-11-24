@@ -1,14 +1,4 @@
 %YAML:1.0 # need to specify the file type at the top!
-# GeoTNav: the baseline (geotnav_ircam_wide) with the rangefinder plane constraint on; see the end.
-# OpenVINS (ov_msckf) on ircam_wide (thermal, 640x512, 30 Hz, h264) and /imu_apps, monocular.
-# Started from config/euroc_mav. Changes for the IR camera at ~100 m above flat ground:
-# - Tracking at 15 Hz with 15 clones, so the window spans ~1 s (~10 m at cruise speed), for
-#   parallax on points ~100 m away.
-# - CLAHE and a lower FAST threshold for the thermal image's low contrast; a 1.5 px measurement
-#   noise for the h264 artefacts.
-# - Camera intrinsics are fixed (a flat scene cannot calibrate them); extrinsics and the time offset
-#   are refined from rough values.
-# - Static initialisation: the flights start standing on the ground.
 
 verbosity: "INFO" # ALL, DEBUG, INFO, WARNING, ERROR, SILENT
 
@@ -22,6 +12,8 @@ calib_cam_intrinsics: false
 calib_cam_timeoffset: true
 calib_imu_intrinsics: false
 calib_imu_g_sensitivity: false
+
+use_mask: false
 
 max_clones: 15
 max_slam: 50
@@ -89,10 +81,11 @@ filepath_gt: "/tmp/ov_groundtruth.txt"
 # ==================================================================
 # ==================================================================
 
-# Triangulation limits. The defaults (max_dist 60 m, depth/baseline 40, condition 1e4) reject every
-# feature ~100 m below, and with no visual update the filter runs on the IMU alone.
+# Triangulation limits. The defaults (max_dist 60 m, condition 1e4) reject every feature ~100 m below, and with
+# no visual update the filter runs on the IMU alone. The depth/baseline limit stays at the default 40: features
+# with less parallax are dropped (in simulation, keeping them down to 200 made the attitude far worse).
 fi_max_dist: 1000
-fi_max_baseline: 200
+fi_max_baseline: 40
 fi_max_cond_number: 50000
 
 use_klt: true
@@ -103,6 +96,10 @@ grid_y: 4
 min_px_dist: 15
 knn_ratio: 0.70
 track_frequency: 15.0
+# Every frame is tracked, propagated and updated at 15 Hz. The window (max_clones: 15) holds the 5 newest frames
+# plus 10 keyframes, one every 6th frame: ~4.3 s of baseline for points far away, with an update every frame.
+keyframe_every_n_frames: 6
+num_recent_clones: 5
 downsample_cameras: false
 num_opencv_threads: 4
 histogram_method: "HISTOGRAM" # NONE, HISTOGRAM, CLAHE
@@ -121,17 +118,14 @@ up_slam_chi2_multipler: 2.5
 up_aruco_sigma_px: 1
 up_aruco_chi2_multipler: 1
 
-use_mask: false
-
 relative_config_imu: "kalibr_imu_chain.yaml"
 relative_config_imucam: "kalibr_imucam_chain.yaml"
 relative_config_range: "range_chain.yaml"  # the rangefinder (read only with use_range)
 
 # ==================================================================
-# GeoTNav: rangefinder plane constraint. The ground is taken as a plane
-# perpendicular to gravity; each MSCKF feature gets one more row: the rangefinder's slant range at the
-# newest clone it is seen from, predicted as (clone z - feature z) / cos(tilt). This is the baseline
-# config (geotnav_ircam_wide) with the constraint on.
+# GeoTNav: rangefinder plane constraint. The ground is taken as a plane perpendicular to gravity. Each MSCKF
+# feature with enough parallax gets one more row: the rangefinder's slant range at the newest clone it is seen
+# from, predicted as (clone z - feature z) / cos(tilt). New SLAM features are created with the range.
 # ==================================================================
 use_range: true
 range_sigma: 3.0               # [m] per feature: how far it sits off the plane (vegetation, roofs, slopes)
@@ -139,6 +133,9 @@ range_sigma_shared: 3.0        # [m] shared by the rows using one reading (range
 range_huber_k: 3.0
 range_min: 0.0                 # valid ranges in (min, max]; it reports 250 m without a return
 range_max: 190.0
-range_max_tilt_deg: 45.0
+range_max_tilt_deg: 55.0
 range_max_gap: 0.1             # [s] between the two readings interpolated at a clone's time
 range_min_height: 5.0          # [m] no rows below (take-off, landing: features too close)
+range_min_parallax: 0.05       # no range row below this baseline / depth (the feature's image rows are kept)
+range_slam_init: true          # create SLAM features with the range (on the plane when parallax is low)
+range_outlier_max_dev: 5.0     # [m] drop a reading whose ground height is this far from the window's median (tree, roof); 0: off

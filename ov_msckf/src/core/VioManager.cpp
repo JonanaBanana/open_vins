@@ -178,9 +178,13 @@ VioManager::VioManager(VioManagerOptions &params_) : thread_init_running(false),
       }
     }
     range_buffer = std::make_shared<RangeBuffer>(params.range_options);
-    updaterMSCKF->set_range(range_buffer, params.range_options);
+    range_updater = std::make_shared<UpdaterRange>(range_buffer, params.range_options);
+    updaterMSCKF->set_range(range_updater);
   }
   updaterSLAM = std::make_shared<UpdaterSLAM>(params.slam_options, params.aruco_options, params.featinit_options);
+  if (range_updater != nullptr && params.range_options.slam_init) {
+    updaterSLAM->set_range(range_updater);
+  }
 
   // If we are using zero velocity updates, then create the updater
   if (params.try_zupt) {
@@ -266,6 +270,11 @@ void VioManager::feed_measurement_simulation(double timestamp, const std::vector
     std::exit(EXIT_FAILURE);
   }
 
+  // GeoTNav: with keyframes and no recent clones, only keyframes are propagated, cloned and used to update
+  frame_is_keyframe = is_keyframe();
+  if (!frame_is_keyframe && !use_recent_clones())
+    return;
+
   // Call on our propagate and update function
   // Simulation is either all sync, or single camera...
   ov_core::CameraData message;
@@ -341,10 +350,47 @@ void VioManager::track_image_and_update(const ov_core::CameraData &message_const
       PRINT_DEBUG(BLUE "[TIME]: %.4f seconds for tracking\n" RESET, time_track);
       return;
     }
+    frames_since_keyframe = params.keyframe_every_n_frames;  // the initialisation frame is a keyframe
   }
+
+  // GeoTNav: with keyframes and no recent clones, only keyframes are propagated, cloned and used to update (the
+  // others were only tracked)
+  frame_is_keyframe = is_keyframe();
+  if (!frame_is_keyframe && !use_recent_clones())
+    return;
 
   // Call on our propagate and update function
   do_feature_propagate_update(message);
+}
+
+bool VioManager::is_keyframe() {
+  if (++frames_since_keyframe < params.keyframe_every_n_frames)
+    return false;
+  frames_since_keyframe = 0;
+  return true;
+}
+
+void VioManager::choose_marg_clone(double &time, bool &oldest) {
+  time = -1;
+  oldest = false;
+  if (state->_clones_IMU.empty())
+    return;
+  // Clones older than the recent part are kept only at keyframes: the newest non-keyframe there is the one leaving
+  // the recent part now (or one left from the start-up, before updates began)
+  if ((int)state->_clones_IMU.size() > params.num_recent_clones) {
+    auto it = state->_clones_IMU.rbegin();
+    std::advance(it, params.num_recent_clones);
+    for (; it != state->_clones_IMU.rend(); ++it) {
+      if (keyframe_times.find(it->first) == keyframe_times.end()) {
+        time = it->first;
+        break;
+      }
+    }
+  }
+  // Otherwise the window is all keyframes: drop the oldest when it is full, as upstream
+  if (time < 0 && (int)state->_clones_IMU.size() > state->_options.max_clone_size)
+    time = state->_clones_IMU.begin()->first;
+  oldest = time >= 0 && time == state->_clones_IMU.begin()->first;
 }
 
 void VioManager::do_feature_propagate_update(const ov_core::CameraData &message) {
@@ -367,6 +413,8 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
   if (state->_timestamp != message.timestamp) {
     propagator->propagate_and_clone(state, message.timestamp);
   }
+  if (use_recent_clones() && frame_is_keyframe && state->_clones_IMU.find(message.timestamp) != state->_clones_IMU.end())
+    keyframe_times.insert(message.timestamp);
   rT3 = boost::posix_time::microsec_clock::local_time();
 
   // If we have not reached max clones, we should just return...
@@ -396,7 +444,19 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
   feats_lost = trackFEATS->get_feature_database()->features_not_containing_newer(state->_timestamp, false, true);
 
   // Don't need to get the oldest features until we reach our max number of clones
-  if ((int)state->_clones_IMU.size() > state->_options.max_clone_size || (int)state->_clones_IMU.size() > 5) {
+  // GeoTNav: with recent clones, only when the oldest clone is marginalized after this update; a non-keyframe
+  // clone is marginalized with its observations dropped (the features keep the others, at the keyframes)
+  double marg_time = -1;
+  bool marg_oldest = false;
+  if (use_recent_clones()) {
+    choose_marg_clone(marg_time, marg_oldest);
+    if (marg_oldest) {
+      feats_marg = trackFEATS->get_feature_database()->features_containing(marg_time, false, true);
+      if (trackARUCO != nullptr && message.timestamp - startup_time >= params.dt_slam_delay) {
+        feats_slam = trackARUCO->get_feature_database()->features_containing(marg_time, false, true);
+      }
+    }
+  } else if ((int)state->_clones_IMU.size() > state->_options.max_clone_size || (int)state->_clones_IMU.size() > 5) {
     feats_marg = trackFEATS->get_feature_database()->features_containing(state->margtimestep(), false, true);
     if (trackARUCO != nullptr && message.timestamp - startup_time >= params.dt_slam_delay) {
       feats_slam = trackARUCO->get_feature_database()->features_containing(state->margtimestep(), false, true);
@@ -441,7 +501,13 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
     // See if any of our camera's reached max track
     bool reached_max = false;
     for (const auto &cams : (*it2)->timestamps) {
-      if ((int)cams.second.size() > state->_options.max_clone_size) {
+      // GeoTNav: with keyframes, only the observations at clones count (the others are dropped by the updates)
+      int n_obs = (int)cams.second.size();
+      if (params.keyframe_every_n_frames > 1) {
+        n_obs = (int)std::count_if(cams.second.begin(), cams.second.end(),
+                                   [&](double t) { return state->_clones_IMU.find(t) != state->_clones_IMU.end(); });
+      }
+      if (n_obs > state->_options.max_clone_size) {
         reached_max = true;
         break;
       }
@@ -607,6 +673,27 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
   updaterSLAM->delayed_init(state, feats_slam_DELAYED);
   rT6 = boost::posix_time::microsec_clock::local_time();
 
+  // GeoTNav: every 10 s, how far the SLAM features sit from the plane under the beam now. Their spread is the
+  // terrain; a mean that grows means the map's scale or height drifts from the rangefinder's.
+  if (range_updater != nullptr && (range_last_slam_log < 0 || state->_timestamp - range_last_slam_log > 10.0)) {
+    double range = 0.0, z_plane = 0.0;
+    const std::unordered_map<size_t, std::vector<double>> newest = {{0, {state->_timestamp}}};
+    double clone_time = -1.0;
+    const std::vector<Eigen::Vector3d> slam = get_features_SLAM();
+    if (!slam.empty() && range_updater->find_reading(state, newest, clone_time, range) &&
+        range_updater->plane_height(state, clone_time, range, z_plane)) {
+      double sum = 0.0, sq = 0.0;
+      for (const auto &p : slam) {
+        sum += p(2) - z_plane;
+        sq += (p(2) - z_plane) * (p(2) - z_plane);
+      }
+      const double mean = sum / slam.size();
+      PRINT_INFO("[RANGE-SLAM] t %.1f: %zu SLAM features, height above the range plane mean %+.2f m, std %.2f m (range %.1f m)\n",
+                 state->_timestamp, slam.size(), mean, std::sqrt(std::max(0.0, sq / slam.size() - mean * mean)), range);
+      range_last_slam_log = state->_timestamp;
+    }
+  }
+
   //===================================================================================
   // Update our visualization feature set, and clean up the old features
   //===================================================================================
@@ -641,19 +728,43 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
     trackARUCO->get_feature_database()->cleanup();
   }
 
-  // First do anchor change if we are about to lose an anchor pose
-  updaterSLAM->change_anchors(state);
-
-  // Cleanup any features older than the marginalization time
-  if ((int)state->_clones_IMU.size() > state->_options.max_clone_size) {
-    trackFEATS->get_feature_database()->cleanup_measurements(state->margtimestep());
-    if (trackARUCO != nullptr) {
-      trackARUCO->get_feature_database()->cleanup_measurements(state->margtimestep());
+  if (use_recent_clones()) {
+    // GeoTNav: marginalize the clone chosen before the update (if any), as upstream does the oldest below
+    if (marg_time >= 0) {
+      updaterSLAM->change_anchors(state, marg_time);
+      if (marg_oldest) {
+        trackFEATS->get_feature_database()->cleanup_measurements(marg_time);
+      } else {
+        trackFEATS->get_feature_database()->cleanup_measurements_exact(marg_time);
+      }
+      if (trackARUCO != nullptr) {
+        if (marg_oldest) {
+          trackARUCO->get_feature_database()->cleanup_measurements(marg_time);
+        } else {
+          trackARUCO->get_feature_database()->cleanup_measurements_exact(marg_time);
+        }
+      }
+      StateHelper::marginalize_clone(state, marg_time);
     }
-  }
+    // Forget keyframes that are no longer clones
+    for (auto it = keyframe_times.begin(); it != keyframe_times.end();) {
+      it = state->_clones_IMU.find(*it) == state->_clones_IMU.end() ? keyframe_times.erase(it) : std::next(it);
+    }
+  } else {
+    // First do anchor change if we are about to lose an anchor pose
+    updaterSLAM->change_anchors(state);
 
-  // Finally marginalize the oldest clone if needed
-  StateHelper::marginalize_old_clone(state);
+    // Cleanup any features older than the marginalization time
+    if ((int)state->_clones_IMU.size() > state->_options.max_clone_size) {
+      trackFEATS->get_feature_database()->cleanup_measurements(state->margtimestep());
+      if (trackARUCO != nullptr) {
+        trackARUCO->get_feature_database()->cleanup_measurements(state->margtimestep());
+      }
+    }
+
+    // Finally marginalize the oldest clone if needed
+    StateHelper::marginalize_old_clone(state);
+  }
   rT7 = boost::posix_time::microsec_clock::local_time();
 
   //===================================================================================

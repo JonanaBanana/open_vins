@@ -67,6 +67,7 @@ Simulator::Simulator(VioManagerOptions &params_) {
   timestamp = spline->get_start_time();
   timestamp_last_imu = spline->get_start_time();
   timestamp_last_cam = spline->get_start_time();
+  timestamp_last_range = spline->get_start_time();
 
   // Get the pose at the current timestep
   Eigen::Matrix3d R_GtoI_init;
@@ -104,6 +105,7 @@ Simulator::Simulator(VioManagerOptions &params_) {
       timestamp += 1.0 / params.sim_freq_cam;
       timestamp_last_imu += 1.0 / params.sim_freq_cam;
       timestamp_last_cam += 1.0 / params.sim_freq_cam;
+      timestamp_last_range += 1.0 / params.sim_freq_cam;
     }
   }
   PRINT_DEBUG("[SIM]: moved %.3f seconds into the dataset where it starts moving\n", timestamp - spline->get_start_time());
@@ -132,6 +134,8 @@ Simulator::Simulator(VioManagerOptions &params_) {
   gen_state_perturb.seed(params.sim_seed_preturb);
   gen_meas_imu = std::mt19937(params.sim_seed_measurements);
   gen_meas_imu.seed(params.sim_seed_measurements);
+  gen_meas_range = std::mt19937(params.sim_seed_measurements + 1);
+  gen_meas_range.seed(params.sim_seed_measurements + 1);
 
   // Create generator for our camera
   for (int i = 0; i < params.state_options.num_cameras; i++) {
@@ -490,6 +494,13 @@ std::vector<std::pair<size_t, Eigen::VectorXf>> Simulator::project_pointcloud(co
       continue;
     }
 
+    // GeoTNav: the distortion must map this direction back to itself. Beyond its valid range a wide-angle model
+    // folds back (the equidistant polynomial's radius peaks and decreases again), and points far off the optical
+    // axis would land inside the image at a wrong position.
+    if ((camera->undistort_f(uv_dist) - uv_norm).norm() > 1e-3f) {
+      continue;
+    }
+
     // Else we can add this as a good projection
     uvs.push_back({feat.first, uv_dist});
   }
@@ -512,7 +523,10 @@ void Simulator::generate_points(const Eigen::Matrix3d &R_GtoI, const Eigen::Vect
   std::shared_ptr<ov_core::CamBase> camera = params.camera_intrinsics.at(camid);
 
   // Generate the desired number of features
-  for (int i = 0; i < numpts; i++) {
+  // GeoTNav: on the ground plane, rays that miss it (above the horizon) or reach it too far away are retried,
+  // a bounded number of times
+  int generated = 0;
+  for (int attempt = 0; generated < numpts && attempt < 20 * numpts; attempt++) {
 
     // Uniformly randomly generate within our fov
     std::uniform_real_distribution<double> gen_u(0, camera->w());
@@ -526,13 +540,28 @@ void Simulator::generate_points(const Eigen::Matrix3d &R_GtoI, const Eigen::Vect
     // Undistort this point to our normalized coordinates
     cv::Point2f uv_norm = camera->undistort_cv(uv_dist);
 
-    // Generate a random depth
-    std::uniform_real_distribution<double> gen_depth(params.sim_min_feature_gen_distance, params.sim_max_feature_gen_distance);
-    double depth = gen_depth(gen_state_init);
-
-    // Get the 3d point
+    // Get the bearing (unit depth)
     Eigen::Vector3d bearing;
     bearing << uv_norm.x, uv_norm.y, 1;
+
+    double depth;
+    if (params.sim_ground_plane) {
+      // GeoTNav: the depth at which the ray meets the ground plane, offset by the feature's own height (roughness).
+      // With the bearing at unit depth, the distance along it is the depth.
+      std::normal_distribution<double> gen_rough(0.0, 1.0);
+      const double dz = params.sim_ground_roughness * gen_rough(gen_state_init);
+      const Eigen::Vector3d p_CinG = p_IinG - R_GtoI.transpose() * R_ItoC.transpose() * p_IinC;
+      const Eigen::Vector3d dir_inG = R_GtoI.transpose() * R_ItoC.transpose() * bearing;
+      depth = ray_to_ground(p_CinG, dir_inG, dz);
+      if (depth < 0.1 || depth > params.sim_max_feature_gen_distance)
+        continue;
+    } else {
+      // Generate a random depth
+      std::uniform_real_distribution<double> gen_depth(params.sim_min_feature_gen_distance, params.sim_max_feature_gen_distance);
+      depth = gen_depth(gen_state_init);
+    }
+
+    // Get the 3d point
     Eigen::Vector3d p_FinC;
     p_FinC = depth * bearing;
 
@@ -543,5 +572,64 @@ void Simulator::generate_points(const Eigen::Matrix3d &R_GtoI, const Eigen::Vect
     // Append this as a new feature
     featmap.insert({id_map, p_FinG});
     id_map++;
+    generated++;
   }
+}
+
+double Simulator::ray_to_ground(const Eigen::Vector3d &origin, const Eigen::Vector3d &dir, double dz) const {
+  // origin + s dir on z = h + g . (x, y) + dz:  s = (h + dz + g . origin_xy - origin_z) / (dir_z - g . dir_xy)
+  const Eigen::Vector2d &g = params.sim_ground_gradient;
+  const double denom = dir(2) - g.dot(dir.head<2>());
+  const double num = params.sim_ground_height + dz + g.dot(origin.head<2>()) - origin(2);
+  if (std::abs(denom) < 1e-12)
+    return -1.0;
+  double s = num / denom;
+  const double A = params.sim_ground_hills(0);
+  if (A == 0.0)
+    return s;
+  // With hills: Newton on f(s) = origin_z + s dir_z - ground(origin_xy + s dir_xy), from the plane's solution
+  const double k = 2.0 * M_PI / params.sim_ground_hills(1);
+  for (int it = 0; it < 50; it++) {
+    const Eigen::Vector2d xy = origin.head<2>() + s * dir.head<2>();
+    const double hill = A * std::sin(k * xy(0)) * std::sin(k * xy(1));
+    const Eigen::Vector2d dhill(A * k * std::cos(k * xy(0)) * std::sin(k * xy(1)), A * k * std::sin(k * xy(0)) * std::cos(k * xy(1)));
+    const double f = origin(2) + s * dir(2) - (params.sim_ground_height + dz + g.dot(xy) + hill);
+    const double df = dir(2) - (g + dhill).dot(dir.head<2>());
+    if (std::abs(f) < 1e-6)
+      return s;
+    if (std::abs(df) < 1e-12)
+      return -1.0;
+    s -= f / df;
+  }
+  return -1.0;
+}
+
+bool Simulator::get_next_range(double time_until, double &time_range, double &range) {
+
+  // Next reading time (IMU clock); none yet if it is after time_until
+  const double t = timestamp_last_range + 1.0 / params.sim_range_freq;
+  if (params.sim_range_freq <= 0.0 || t > time_until)
+    return false;
+  timestamp_last_range = t;
+
+  // True pose at that time
+  Eigen::Matrix3d R_GtoI;
+  Eigen::Vector3d p_IinG;
+  if (!spline->get_pose(t, R_GtoI, p_IinG))
+    return false;
+
+  // Beam from the rangefinder (T_imu_range) to the ground, possibly hitting an object above it instead
+  const Eigen::Vector3d p_SinG = p_IinG + R_GtoI.transpose() * params.range_options.p_in_imu;
+  const Eigen::Vector3d b_inG = R_GtoI.transpose() * params.range_options.dir_in_imu;
+  std::uniform_real_distribution<double> gen_u(0.0, 1.0);
+  double dz = 0.0;
+  if (gen_u(gen_meas_range) < params.sim_range_outlier_prob)
+    dz = params.sim_range_outlier_max * (1.0 - gen_u(gen_meas_range));
+  const double s = ray_to_ground(p_SinG, b_inG, dz);
+  std::normal_distribution<double> w(0.0, 1.0);
+  range = (s > 0.0) ? s + params.sim_range_sigma * w(gen_meas_range) : NAN;
+
+  // In the rangefinder's clock
+  time_range = t - params.range_options.time_offset;
+  return true;
 }

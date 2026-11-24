@@ -157,6 +157,12 @@ int main(int argc, char **argv) {
 #if ROS_AVAILABLE == 1 || ROS_AVAILABLE == 2
       viz->visualize_odometry(message_imu.timestamp);
 #endif
+      // GeoTNav: simulated rangefinder readings up to this IMU time (use_range); the camera measurements are
+      // fed a frame late, so the readings around each image are available at its update
+      double time_range, range;
+      while (params.range_options.enabled && sim->get_next_range(message_imu.timestamp, time_range, range)) {
+        sys->feed_measurement_range(time_range, range);
+      }
     }
 
     // CAM: get the next simulated camera uv measurements if we have them

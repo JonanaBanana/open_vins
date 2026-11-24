@@ -104,6 +104,16 @@ struct VioManagerOptions {
   /// GeoTNav: the rangefinder plane constraint
   RangeOptions range_options;
 
+  /// GeoTNav: every n-th tracked frame is a keyframe. Clones older than the num_recent_clones newest are kept
+  /// only at keyframes, so the window of max_clones spans a longer time: the baseline distant scenes need, with
+  /// frame-to-frame tracking and initialisation at the full track_frequency. 1: every frame (upstream).
+  int keyframe_every_n_frames = 1;
+
+  /// GeoTNav (with keyframe_every_n_frames > 1): the newest frames that are clones whether or not they are
+  /// keyframes; every frame is then propagated and updated. A non-keyframe clone leaving this part is
+  /// marginalized and its observations dropped. 0: only keyframes are propagated, cloned and updated.
+  int num_recent_clones = 0;
+
   /// GeoTNav: print a [TRACK] line per camera update (tracks, MSCKF features offered / triangulated / used,
   /// SLAM features, speed), to see when vision thins out or fails
   bool print_track_stats = false;
@@ -128,9 +138,35 @@ struct VioManagerOptions {
       parser->parse_config("record_timing_information", record_timing_information);
       parser->parse_config("record_timing_filepath", record_timing_filepath);
       parser->parse_config("print_track_stats", print_track_stats, false);
+      int renamed = -1;
+      parser->parse_config("clone_every_n_frames", renamed, false);
+      if (renamed != -1) {
+        PRINT_ERROR(RED "clone_every_n_frames was renamed to keyframe_every_n_frames (see also num_recent_clones)\n" RESET);
+        std::exit(EXIT_FAILURE);
+      }
+      parser->parse_config("keyframe_every_n_frames", keyframe_every_n_frames, false);
+      parser->parse_config("num_recent_clones", num_recent_clones, false);
+      if (keyframe_every_n_frames < 1) {
+        PRINT_ERROR(RED "keyframe_every_n_frames must be at least 1 (is %d)\n" RESET, keyframe_every_n_frames);
+        std::exit(EXIT_FAILURE);
+      }
+      if (keyframe_every_n_frames > 1 && (num_recent_clones < 0 || num_recent_clones > state_options.max_clone_size - 2)) {
+        PRINT_ERROR(RED "num_recent_clones must be in [0, max_clones - 2] = [0, %d] (is %d)\n" RESET,
+                    state_options.max_clone_size - 2, num_recent_clones);
+        std::exit(EXIT_FAILURE);
+      }
     }
     range_options.print_and_load(parser);
     PRINT_DEBUG("  - print_track_stats: %d\n", (int)print_track_stats);
+    if (keyframe_every_n_frames > 1) {
+      if (num_recent_clones > 0) {
+        PRINT_INFO("keyframes: every %d frames; window = %d newest frames + %d keyframes (every frame is updated)\n",
+                   keyframe_every_n_frames, num_recent_clones, state_options.max_clone_size - num_recent_clones);
+      } else {
+        PRINT_INFO("keyframes: every %d frames; window = %d keyframes (only keyframes are updated)\n", keyframe_every_n_frames,
+                   state_options.max_clone_size);
+      }
+    }
     PRINT_DEBUG("  - dt_slam_delay: %.1f\n", dt_slam_delay);
     PRINT_DEBUG("  - zero_velocity_update: %d\n", try_zupt);
     PRINT_DEBUG("  - zupt_max_velocity: %.2f\n", zupt_max_velocity);
@@ -547,6 +583,27 @@ struct VioManagerOptions {
   /// Feature distance we generate features from (maximum)
   double sim_max_feature_gen_distance = 10;
 
+  /// GeoTNav: generate features on a ground surface instead of at random depths: the plane
+  /// z = sim_ground_height + gradient . (x, y) in the global frame, each feature offset from it by a normal
+  /// random height (sim_ground_roughness; vegetation, buildings). Features farther than
+  /// sim_max_feature_gen_dist are not seen, as in the default mode.
+  bool sim_ground_plane = false;
+  double sim_ground_height = 0.0;
+  Eigen::Vector2d sim_ground_gradient = Eigen::Vector2d::Zero();
+  double sim_ground_roughness = 0.0;
+  /// GeoTNav: hills on the ground plane, A sin(2 pi x / L) sin(2 pi y / L) with [A, L] = sim_ground_hills [m]
+  /// (steepest slope 2 pi A / L). A = 0: none.
+  Eigen::Vector2d sim_ground_hills = Eigen::Vector2d::Zero();
+
+  /// GeoTNav: simulated rangefinder (with use_range): readings at sim_range_freq [Hz] of the distance along the
+  /// beam (range0 T_imu_range) to the ground plane, plus normal noise sim_range_sigma [m]. With probability
+  /// sim_range_outlier_prob a reading hits an object above the ground instead (canopy, roofs): it is shorter by
+  /// a uniform height in (0, sim_range_outlier_max] [m] along the vertical.
+  double sim_range_freq = 20.0;
+  double sim_range_sigma = 0.1;
+  double sim_range_outlier_prob = 0.0;
+  double sim_range_outlier_max = 0.0;
+
   /**
    * @brief This function will load print out all simulated parameters.
    * This allows for visual checking that everything was loaded properly from ROS/CMD parsers.
@@ -565,6 +622,38 @@ struct VioManagerOptions {
       parser->parse_config("sim_freq_imu", sim_freq_imu);
       parser->parse_config("sim_min_feature_gen_dist", sim_min_feature_gen_distance);
       parser->parse_config("sim_max_feature_gen_dist", sim_max_feature_gen_distance);
+      parser->parse_config("sim_ground_plane", sim_ground_plane, false);
+      parser->parse_config("sim_ground_height", sim_ground_height, false);
+      std::vector<double> gradient = {0.0, 0.0};
+      parser->parse_config("sim_ground_gradient", gradient, false);
+      if (gradient.size() != 2) {
+        PRINT_ERROR(RED "sim_ground_gradient must have 2 elements (dz/dx, dz/dy)\n" RESET);
+        std::exit(EXIT_FAILURE);
+      }
+      sim_ground_gradient << gradient.at(0), gradient.at(1);
+      parser->parse_config("sim_ground_roughness", sim_ground_roughness, false);
+      std::vector<double> hills = {0.0, 1.0};
+      parser->parse_config("sim_ground_hills", hills, false);
+      if (hills.size() != 2 || hills.at(1) <= 0.0) {
+        PRINT_ERROR(RED "sim_ground_hills must be [amplitude, wavelength > 0]\n" RESET);
+        std::exit(EXIT_FAILURE);
+      }
+      sim_ground_hills << hills.at(0), hills.at(1);
+      parser->parse_config("sim_range_freq", sim_range_freq, false);
+      parser->parse_config("sim_range_sigma", sim_range_sigma, false);
+      parser->parse_config("sim_range_outlier_prob", sim_range_outlier_prob, false);
+      parser->parse_config("sim_range_outlier_max", sim_range_outlier_max, false);
+    }
+    if (sim_ground_plane) {
+      PRINT_INFO("[SIM]: ground plane z = %.2f + %.4f x + %.4f y, roughness %.2f m\n", sim_ground_height, sim_ground_gradient(0),
+                 sim_ground_gradient(1), sim_ground_roughness);
+      if (sim_ground_hills(0) != 0.0)
+        PRINT_INFO("[SIM]: hills of amplitude %.1f m, wavelength %.0f m (steepest slope %.1f %%)\n", sim_ground_hills(0),
+                   sim_ground_hills(1), 100.0 * 2.0 * M_PI * std::abs(sim_ground_hills(0)) / sim_ground_hills(1));
+    }
+    if (range_options.enabled) {
+      PRINT_INFO("[SIM]: rangefinder at %.1f Hz, noise %.2f m, outliers %.1f %% up to %.1f m\n", sim_range_freq, sim_range_sigma,
+                 100.0 * sim_range_outlier_prob, sim_range_outlier_max);
     }
     PRINT_DEBUG("SIMULATION PARAMETERS:\n");
     PRINT_WARNING(BOLDRED "  - state init seed: %d \n" RESET, sim_seed_state_init);
