@@ -7,7 +7,7 @@ integration: "rk4"
 use_stereo: false
 max_cameras: 1
 
-calib_cam_extrinsics: true
+calib_cam_extrinsics: false
 calib_cam_intrinsics: false
 calib_cam_timeoffset: true
 calib_imu_intrinsics: false
@@ -20,6 +20,11 @@ max_slam: 50
 max_slam_in_update: 25
 max_msckf_in_update: 40
 dt_slam_delay: 1
+# SLAM features also from tracks with at least this parallax (perpendicular baseline / distance, as upstream measures
+# it for fi_max_baseline: 40 = 0.025), not only tracks seen in the whole window; youngest first, created on the plane
+# from the range. 0: upstream. The [SLAM] line (print_track_stats) reports where SLAM features are created in the
+# image and how long they live.
+slam_min_parallax: 0.03
 
 gravity_mag: 9.815 # Denmark
 
@@ -136,6 +141,5 @@ range_max: 190.0
 range_max_tilt_deg: 55.0
 range_max_gap: 0.1             # [s] between the two readings interpolated at a clone's time
 range_min_height: 5.0          # [m] no rows below (take-off, landing: features too close)
-range_min_parallax: 0.05       # no range row below this baseline / depth (the feature's image rows are kept)
 range_slam_init: true          # create SLAM features with the range (on the plane when parallax is low)
 range_outlier_max_dev: 5.0     # [m] drop a reading whose ground height is this far from the window's median (tree, roof); 0: off

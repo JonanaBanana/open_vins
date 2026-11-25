@@ -70,8 +70,7 @@ Readings outside the message's own limits, or not finite, are treated as gaps. O
 | `range_max_tilt_deg` | 60 | no rows when the beam is tilted further from vertical |
 | `range_max_gap` | 0.1 | [s] largest gap between the two readings interpolated at a clone's time |
 | `range_min_height` | 0.0 | [m] no rows below this height above the plane (take-off, landing) |
-| `range_min_parallax` | 0.05 | no range row for a feature with less parallax (baseline / distance); its image rows are kept |
-| `range_slam_init` | true | create SLAM features with the range: from all image observations plus a range row, or, with too little parallax, on the plane from one bearing and the range |
+| `range_slam_init` | true | create SLAM features with the range: tracks seen in the whole window from all image observations plus a range row; tracks promoted early (`slam_min_parallax`) or failing triangulation on the plane from one bearing and the range |
 | `range_outlier_max_dev` | 0.0 | [m] drop a reading whose ground height differs by more than this from the median of the window's other readings (short returns off trees, roofs). 0: off |
 
 Requirements and limits:
@@ -107,7 +106,13 @@ frame and a window of about 4.3 s. For distant features, also raise the triangul
 
 * `init_heading_axis_in_imu: [x, y, z]` (unset: upstream): the global frame's x axis is this IMU axis (e.g. the
   vehicle's forward) made horizontal at initialisation, static or dynamic.
-* `print_track_stats: true`: one `[TRACK]` line per update (tracks, features used, SLAM features, speed).
+* `slam_min_parallax` (default 0: upstream): upstream only makes SLAM features of tracks seen in the whole window,
+  which in forward flight have already crossed much of the image and soon leave it. With this set, any track with at
+  least this parallax can become one (youngest first), measured as upstream measures it for `fi_max_baseline`:
+  perpendicular baseline / distance (`fi_max_baseline: 40` corresponds to 0.025). With the rangefinder they are created
+  on the plane from the range, and vision refines them from then on. 0.03 worked well in simulation.
+* `print_track_stats: true`: one `[TRACK]` line per update (tracks, features used, SLAM features, speed) and a
+  `[SLAM]` line every 10 s (where SLAM features are created in the image, how long they live).
 * ROS 2 parameters: `frame_global`, `frame_imu`, `frame_cam` (frame names; defaults as upstream) and `odom_rate_hz`
   (limit the odometry and TF rate; 0: every IMU sample).
 

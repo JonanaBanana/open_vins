@@ -139,7 +139,6 @@ range_max: 190.0
 range_max_tilt_deg: 45.0
 range_max_gap: 0.1             # [s] between the two readings interpolated at a clone's time
 range_min_height: 5.0          # [m] no rows below (take-off, landing: features too close)
-range_min_parallax: 0.05       # no range row below this baseline / depth (the feature's image rows are kept)
 range_slam_init: true          # create SLAM features with the range (on the plane when parallax is low)
 range_outlier_max_dev: 5.0     # [m] drop a reading whose ground height is this far from the window's median (tree, roof); 0: off
 

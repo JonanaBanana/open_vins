@@ -83,34 +83,6 @@ bool UpdaterRange::plane_height(std::shared_ptr<State> state, double clone_time,
   return true;
 }
 
-double UpdaterRange::parallax(std::shared_ptr<State> state, const std::unordered_map<size_t, std::vector<double>> &timestamps,
-                              const Eigen::Vector3d &p_FinG) const {
-  // Clone positions the feature is seen from (IMU positions; the camera offset is the same for all of them)
-  std::vector<Eigen::Vector3d> p;
-  double newest = -INFINITY;
-  Eigen::Vector3d p_newest = Eigen::Vector3d::Zero();
-  for (const auto &pair : timestamps) {
-    for (double t : pair.second) {
-      auto it = state->_clones_IMU.find(t);
-      if (it == state->_clones_IMU.end())
-        continue;
-      p.push_back(it->second->pos());
-      if (t > newest) {
-        newest = t;
-        p_newest = it->second->pos();
-      }
-    }
-  }
-  if (p.size() < 2)
-    return 0.0;
-  double baseline = 0.0;
-  for (size_t i = 0; i < p.size(); i++)
-    for (size_t j = i + 1; j < p.size(); j++)
-      baseline = std::max(baseline, (p[i] - p[j]).norm());
-  const double depth = (p_FinG - p_newest).norm();
-  return depth > 1e-6 ? baseline / depth : 0.0;
-}
-
 int UpdaterRange::column_of(const std::vector<std::shared_ptr<Type>> &Hx_order, const std::shared_ptr<Type> &var) {
   int col = 0;
   for (const auto &v : Hx_order) {
@@ -122,7 +94,7 @@ int UpdaterRange::column_of(const std::vector<std::shared_ptr<Type>> &Hx_order, 
 }
 
 bool UpdaterRange::compute_row(std::shared_ptr<State> state, const std::unordered_map<size_t, std::vector<double>> &timestamps,
-                               const Eigen::Vector3d &p_FinG, const std::vector<std::shared_ptr<Type>> &Hx_order, bool gates, Row &row) {
+                               const Eigen::Vector3d &p_FinG, const std::vector<std::shared_ptr<Type>> &Hx_order, Row &row) {
 
   // The newest clone the feature is seen from that has a valid range (clones are at camera times; the
   // ranges are stamped in the IMU clock).
@@ -135,13 +107,6 @@ bool UpdaterRange::compute_row(std::shared_ptr<State> state, const std::unordere
   std::shared_ptr<PoseJPL> clone = state->_clones_IMU.at(clone_time);
   if (column_of(Hx_order, clone) < 0)
     return false;
-
-  // Too little parallax: the feature's depth from triangulation is unreliable, and at tiny parallax a range row
-  // turns into a constraint that a small rotation can satisfy (it pulls the attitude instead of the depth)
-  if (gates && _options.min_parallax > 0.0 && parallax(state, timestamps, p_FinG) < _options.min_parallax) {
-    n_low_parallax++;
-    return false;
-  }
 
   // Beam in the global frame (z up): b = R_GtoI^T d, so b_z = d . (R_GtoI e_z). The beam starts at the
   // rangefinder, p_S = p_I + R_GtoI^T l (l: its position in the IMU frame), so its height above the
@@ -225,10 +190,10 @@ void UpdaterRange::append_row(const Row &row, int n_shared, double sigma_pix, co
   _bin_n[bin]++;
   if (_rows % 5000 == 0) {
     PRINT_INFO("[RANGE] %ld rows: residual mean %+.2f m, rms %.2f m over the last 5000; rows per reading mean %.1f, max %d; "
-               "Huber %.1f %%; no range %ld, low parallax %ld, outlier readings %ld; SLAM features from range %ld full, %ld on plane; "
+               "Huber %.1f %%; no range %ld, outlier readings %ld; SLAM features from range %ld full, %ld on plane; "
                "mean by tilt <10/10-20/20-30/30+ deg: %+.2f %+.2f %+.2f %+.2f m (%ld %ld %ld %ld rows in all)\n",
                _rows, _res_sum / 5000.0, std::sqrt(_res_sq / 5000.0), _shared_sum / 5000.0, _shared_max, 100.0 * _huber / _rows, n_missing,
-               n_low_parallax, _n_rejected, n_slam_full, n_slam_plane, _bin_sum[0] / std::max(1L, _bin_n[0]),
+               _n_rejected, n_slam_full, n_slam_plane, _bin_sum[0] / std::max(1L, _bin_n[0]),
                _bin_sum[1] / std::max(1L, _bin_n[1]), _bin_sum[2] / std::max(1L, _bin_n[2]), _bin_sum[3] / std::max(1L, _bin_n[3]),
                _bin_n[0], _bin_n[1], _bin_n[2], _bin_n[3]);
     _res_sum = 0.0;

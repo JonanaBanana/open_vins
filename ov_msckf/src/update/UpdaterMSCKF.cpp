@@ -285,7 +285,7 @@ void UpdaterMSCKF::update(std::shared_ptr<State> state, std::vector<std::shared_
 
     // Fork: the visual rows passed; if the feature has a range row, keep its unprojected system for later.
     UpdaterRange::Row row;
-    if (use_range && _range->compute_row(state, (*it2)->timestamps, (*it2)->p_FinG, Hx_order, true, row)) {
+    if (use_range && _range->compute_row(state, (*it2)->timestamps, (*it2)->p_FinG, Hx_order, row)) {
       range_features.push_back({H_f_full, H_x_full, res_full, Hx_order, row});
       it2++;
       continue;

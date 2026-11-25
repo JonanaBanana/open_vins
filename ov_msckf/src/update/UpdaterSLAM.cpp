@@ -61,7 +61,8 @@ UpdaterSLAM::UpdaterSLAM(UpdaterOptions &options_slam, UpdaterOptions &options_a
   }
 }
 
-void UpdaterSLAM::delayed_init(std::shared_ptr<State> state, std::vector<std::shared_ptr<Feature>> &feature_vec) {
+void UpdaterSLAM::delayed_init(std::shared_ptr<State> state, std::vector<std::shared_ptr<Feature>> &feature_vec,
+                               const std::set<size_t> &on_plane) {
 
   // Return if no features
   if (feature_vec.empty())
@@ -156,8 +157,9 @@ void UpdaterSLAM::delayed_init(std::shared_ptr<State> state, std::vector<std::sh
   rT2 = boost::posix_time::microsec_clock::local_time();
 
   // Fork: how each feature is created. UPSTREAM: triangulation and all image observations. FULL: the same plus a
-  // range row (triangulated with enough parallax). PLANE: on the plane at the measured height along the newest
-  // bearing at the reading's clone, from that bearing and the range alone (exactly determined, no state update).
+  // range row (tracks seen in the whole window, triangulated). PLANE: on the plane at the measured height along the
+  // newest bearing at the reading's clone, from that bearing and the range alone (exactly determined, no state
+  // update): tracks promoted early (on_plane) and tracks that failed triangulation.
   enum class Mode { UPSTREAM, FULL, PLANE };
   std::unordered_map<size_t, Mode> mode;
   std::unordered_map<size_t, double> reading_time;
@@ -170,7 +172,7 @@ void UpdaterSLAM::delayed_init(std::shared_ptr<State> state, std::vector<std::sh
     const bool has_plane = use_range_for(f) && _range->find_reading(state, f->timestamps, clone_time, range) &&
                            _range->plane_height(state, clone_time, range, z_plane);
     if (has_plane) {
-      if (triangulated.at(f->featid) && _range->parallax(state, f->timestamps, f->p_FinG) >= _range->options().min_parallax) {
+      if (triangulated.at(f->featid) && on_plane.count(f->featid) == 0) {
         m = Mode::FULL;
       } else {
         // On the plane: the bearing at the reading's clone meets z = z_plane in front of the camera
@@ -270,12 +272,12 @@ void UpdaterSLAM::delayed_init(std::shared_ptr<State> state, std::vector<std::sh
     // Get the Jacobian for this feature
     UpdaterHelper::get_feature_jacobian_full(state, feat, H_f, H_x, res, Hx_order);
 
-    // Fork: append the range row (FULL with the parallax / residual gates, PLANE without: it was built on the
-    // plane from this one bearing). A PLANE feature that gets no row cannot be initialised from one bearing.
+    // Fork: append the range row (PLANE: it was built on the plane from this one bearing). A PLANE feature that gets
+    // no row cannot be initialised from one bearing.
     const Mode m = (mode.count(feat.featid) > 0) ? mode.at(feat.featid) : Mode::UPSTREAM;
     if (m != Mode::UPSTREAM) {
       UpdaterRange::Row row;
-      const bool has_row = _range->compute_row(state, feat.timestamps, (*it2)->p_FinG, Hx_order, m == Mode::FULL, row);
+      const bool has_row = _range->compute_row(state, feat.timestamps, (*it2)->p_FinG, Hx_order, row);
       if (has_row) {
         Eigen::MatrixXd dpfg_dlambda;
         std::vector<Eigen::MatrixXd> dpfg_dx;

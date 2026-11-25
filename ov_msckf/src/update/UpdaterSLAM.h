@@ -24,6 +24,7 @@
 
 #include <Eigen/Eigen>
 #include <memory>
+#include <set>
 
 #include "feat/FeatureInitializerOptions.h"
 
@@ -74,8 +75,11 @@ public:
    * @brief Given max track features, this will try to use them to initialize them in the state.
    * @param state State of the filter
    * @param feature_vec Features that can be used for update
+   * @param on_plane Fork: ids of features to create on the plane from the range (tracks promoted early by
+   * slam_min_parallax; with the rangefinder only)
    */
-  void delayed_init(std::shared_ptr<State> state, std::vector<std::shared_ptr<ov_core::Feature>> &feature_vec);
+  void delayed_init(std::shared_ptr<State> state, std::vector<std::shared_ptr<ov_core::Feature>> &feature_vec,
+                    const std::set<size_t> &on_plane = {});
 
   /**
    * @brief Fork: create SLAM features with the rangefinder (range_slam_init). A feature triangulated with enough

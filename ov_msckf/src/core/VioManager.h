@@ -27,6 +27,7 @@
 #include <atomic>
 #include <boost/filesystem.hpp>
 #include <fstream>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -39,6 +40,7 @@ struct ImuData;
 struct CameraData;
 class TrackBase;
 class FeatureInitializer;
+class Feature;
 } // namespace ov_core
 namespace ov_init {
 class InertialInitializer;
@@ -241,6 +243,19 @@ protected:
 
   /// State time of the last SLAM feature height log
   double range_last_slam_log = -1;
+
+  /// Fork: triangulates candidate tracks for slam_min_parallax (with the triangulation settings, fi_*)
+  std::shared_ptr<ov_core::FeatureInitializer> promote_init;
+
+  /// Fork: ids of the SLAM features chosen in this update that were promoted early (slam_min_parallax); they are
+  /// created on the plane from the range
+  std::set<size_t> slam_on_plane;
+
+  /// Fork: SLAM feature statistics for the [SLAM] line (print_track_stats): creation time of each SLAM feature,
+  /// and per log interval the features created (with their image row, 0 top to 1 bottom) and lost (with their life)
+  std::map<size_t, double> slam_created;
+  double slam_log_last = -1, slam_row_sum = 0.0, slam_life_sum = 0.0;
+  long slam_n_new = 0, slam_n_lost = 0;
 
   /// Our SLAM/ARUCO feature updater
   std::shared_ptr<UpdaterSLAM> updaterSLAM;

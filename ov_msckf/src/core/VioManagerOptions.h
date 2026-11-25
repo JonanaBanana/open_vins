@@ -118,6 +118,14 @@ struct VioManagerOptions {
   /// SLAM features, speed), to see when vision thins out or fails
   bool print_track_stats = false;
 
+  /// Fork: a tracked feature can become a SLAM feature once its parallax reaches this, measured as upstream does for
+  /// fi_max_baseline: the largest baseline between the clones it is seen at, perpendicular to the ray to the feature,
+  /// over its distance (fi_max_baseline 40 rejects features below 1/40 = 0.025). Upstream only promotes tracks seen in
+  /// the whole window, which in forward flight have already crossed much of the image. The candidates (these plus the
+  /// tracks seen in the whole window) are taken youngest first. With the rangefinder, the ones promoted this way are
+  /// created on the plane from the range (range_slam_init). 0: upstream.
+  double slam_min_parallax = 0.0;
+
   /**
    * @brief This function will load print out all estimator settings loaded.
    * This allows for visual checking that everything was loaded properly from ROS/CMD parsers.
@@ -138,6 +146,11 @@ struct VioManagerOptions {
       parser->parse_config("record_timing_information", record_timing_information);
       parser->parse_config("record_timing_filepath", record_timing_filepath);
       parser->parse_config("print_track_stats", print_track_stats, false);
+      parser->parse_config("slam_min_parallax", slam_min_parallax, false);
+      if (slam_min_parallax < 0.0) {
+        PRINT_ERROR(RED "slam_min_parallax must be at least 0 (is %.3f)\n" RESET, slam_min_parallax);
+        std::exit(EXIT_FAILURE);
+      }
       int renamed = -1;
       parser->parse_config("clone_every_n_frames", renamed, false);
       if (renamed != -1) {
@@ -158,6 +171,10 @@ struct VioManagerOptions {
     }
     range_options.print_and_load(parser);
     PRINT_DEBUG("  - print_track_stats: %d\n", (int)print_track_stats);
+    if (slam_min_parallax > 0.0) {
+      PRINT_INFO("SLAM features: also from tracks with at least %.3f parallax (perpendicular baseline / distance)\n",
+                 slam_min_parallax);
+    }
     if (keyframe_every_n_frames > 1) {
       if (num_recent_clones > 0) {
         PRINT_INFO("keyframes: every %d frames; window = %d newest frames + %d keyframes (every frame is updated)\n",

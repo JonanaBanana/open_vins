@@ -189,6 +189,7 @@ VioManager::VioManager(VioManagerOptions &params_) : thread_init_running(false),
     updaterMSCKF->set_range(range_updater);
   }
   updaterSLAM = std::make_shared<UpdaterSLAM>(params.slam_options, params.aruco_options, params.featinit_options);
+  promote_init = std::make_shared<FeatureInitializer>(params.featinit_options);
   if (range_updater != nullptr && params.range_options.slam_init) {
     updaterSLAM->set_range(range_updater);
   }
@@ -370,6 +371,36 @@ void VioManager::track_image_and_update(const ov_core::CameraData &message_const
   do_feature_propagate_update(message);
 }
 
+namespace {
+/// Fork: the parallax of a track as upstream measures it (FeatureInitializer::single_gaussnewton, fi_max_baseline):
+/// the largest baseline between the anchor and the clones it is seen at, perpendicular to the ray to the feature,
+/// over the feature's distance. Triangulates a copy (observations at clones only; the track is not changed); -1 if it
+/// is seen at fewer than 3 clones or the triangulation fails.
+double track_parallax(const std::shared_ptr<Feature> &feat, const std::vector<double> &clone_times, FeatureInitializer &init,
+                      std::unordered_map<size_t, std::unordered_map<double, FeatureInitializer::ClonePose>> &clones_cam) {
+  auto f = std::make_shared<Feature>(*feat);
+  f->clean_old_measurements(clone_times);
+  size_t n = 0;
+  for (const auto &cam : f->timestamps)
+    n += cam.second.size();
+  if (n < 3 || !init.single_triangulation(f, clones_cam))
+    return -1.0;
+  const double dist = f->p_FinA.norm();
+  if (!(dist > 1e-6))
+    return -1.0;
+  FeatureInitializer::ClonePose &anchor = clones_cam.at(f->anchor_cam_id).at(f->anchor_clone_timestamp);
+  const Eigen::Vector3d ray = f->p_FinA / dist;
+  double base_max = 0.0;
+  for (const auto &cam : f->timestamps) {
+    for (double t : cam.second) {
+      const Eigen::Vector3d p_CiinA = anchor.Rot() * (clones_cam.at(cam.first).at(t).pos() - anchor.pos());
+      base_max = std::max(base_max, (p_CiinA - p_CiinA.dot(ray) * ray).norm());
+    }
+  }
+  return base_max / dist;
+}
+} // namespace
+
 bool VioManager::is_keyframe() {
   if (++frames_since_keyframe < params.keyframe_every_n_frames)
     return false;
@@ -546,9 +577,57 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
     int valid_amount = (amount_to_add > (int)feats_maxtracks.size()) ? (int)feats_maxtracks.size() : amount_to_add;
     // If we have at least 1 that we can add, lets add it!
     // Note: we remove them from the feat_marg array since we don't want to reuse information...
-    if (valid_amount > 0) {
-      feats_slam.insert(feats_slam.end(), feats_maxtracks.end() - valid_amount, feats_maxtracks.end());
-      feats_maxtracks.erase(feats_maxtracks.end() - valid_amount, feats_maxtracks.end());
+    if (params.slam_min_parallax <= 0.0) {
+      if (valid_amount > 0) {
+        feats_slam.insert(feats_slam.end(), feats_maxtracks.end() - valid_amount, feats_maxtracks.end());
+        feats_maxtracks.erase(feats_maxtracks.end() - valid_amount, feats_maxtracks.end());
+      }
+    } else {
+      // Fork (slam_min_parallax): the candidates are the tracks seen in the whole window plus the tracks in the
+      // current frame with enough parallax, youngest first (latest first observation): in forward flight they are
+      // the ones that stay in view longest. The chosen ones leave the MSCKF lists, so their measurements are used once.
+      std::vector<std::pair<double, std::shared_ptr<Feature>>> cand;
+      auto first_seen = [](const std::shared_ptr<Feature> &feat) {
+        double t = INFINITY;
+        for (const auto &cam : feat->timestamps)
+          if (!cam.second.empty())
+            t = std::min(t, cam.second.front());
+        return t;
+      };
+      for (const auto &feat : feats_maxtracks)
+        cand.push_back({first_seen(feat), feat});
+      // Camera poses of the clones, as the updaters build them for triangulation
+      std::vector<double> clone_times;
+      std::unordered_map<size_t, std::unordered_map<double, FeatureInitializer::ClonePose>> clones_cam;
+      for (const auto &clone : state->_clones_IMU)
+        clone_times.push_back(clone.first);
+      for (const auto &calib : state->_calib_IMUtoCAM) {
+        for (const auto &clone : state->_clones_IMU) {
+          const Eigen::Matrix3d R_GtoCi = calib.second->Rot() * clone.second->Rot();
+          clones_cam[calib.first].insert({clone.first, FeatureInitializer::ClonePose(R_GtoCi, clone.second->pos() - R_GtoCi.transpose() * calib.second->pos())});
+        }
+      }
+      std::set<size_t> early;
+      for (const auto &feat : trackFEATS->get_feature_database()->features_containing(state->_timestamp, false, true)) {
+        if (state->_features_SLAM.find(feat->featid) != state->_features_SLAM.end() ||
+            std::find(feats_maxtracks.begin(), feats_maxtracks.end(), feat) != feats_maxtracks.end() ||
+            track_parallax(feat, clone_times, *promote_init, clones_cam) < params.slam_min_parallax)
+          continue;
+        cand.push_back({first_seen(feat), feat});
+        early.insert(feat->featid);
+      }
+      std::sort(cand.begin(), cand.end(),
+                [](const std::pair<double, std::shared_ptr<Feature>> &a, const std::pair<double, std::shared_ptr<Feature>> &b) {
+                  return a.first > b.first;
+                });
+      for (int i = 0; i < std::min(amount_to_add, (int)cand.size()); i++) {
+        const std::shared_ptr<Feature> &feat = cand[i].second;
+        feats_slam.push_back(feat);
+        if (early.count(feat->featid) > 0)
+          slam_on_plane.insert(feat->featid);
+        feats_marg.erase(std::remove(feats_marg.begin(), feats_marg.end(), feat), feats_marg.end());
+        feats_maxtracks.erase(std::remove(feats_maxtracks.begin(), feats_maxtracks.end(), feat), feats_maxtracks.end());
+      }
     }
   }
 
@@ -678,8 +757,46 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
   }
   feats_slam_UPDATE = feats_slam_UPDATE_TEMP;
   rT5 = boost::posix_time::microsec_clock::local_time();
-  updaterSLAM->delayed_init(state, feats_slam_DELAYED);
+  updaterSLAM->delayed_init(state, feats_slam_DELAYED, slam_on_plane);
+  slam_on_plane.clear();
   rT6 = boost::posix_time::microsec_clock::local_time();
+
+  // Fork: where in the image SLAM features are created and how long they live (print_track_stats), every 10 s
+  if (params.print_track_stats) {
+    for (const auto &feat : feats_slam_DELAYED) {
+      if (state->_features_SLAM.find(feat->featid) == state->_features_SLAM.end() || slam_created.count(feat->featid) > 0)
+        continue;
+      slam_created[feat->featid] = state->_timestamp;
+      double newest = -1.0, row = 0.0;
+      for (const auto &cam : feat->timestamps) {
+        if (!cam.second.empty() && cam.second.back() > newest) {
+          newest = cam.second.back();
+          row = feat->uvs.at(cam.first).back()(1) / state->_cam_intrinsics_cameras.at(cam.first)->h();
+        }
+      }
+      slam_row_sum += row;
+      slam_n_new++;
+    }
+    for (auto it = slam_created.begin(); it != slam_created.end();) {
+      if (state->_features_SLAM.find(it->first) == state->_features_SLAM.end()) {
+        slam_life_sum += state->_timestamp - it->second;
+        slam_n_lost++;
+        it = slam_created.erase(it);
+      } else {
+        it++;
+      }
+    }
+    if (slam_log_last < 0 || state->_timestamp - slam_log_last >= 10.0) {
+      if (slam_log_last >= 0) {
+        PRINT_INFO("[SLAM] t %.1f: %d SLAM features; %ld created (mean image row %.2f, 0 top, 1 bottom), %ld lost (mean life %.1f s)\n",
+                   state->_timestamp, (int)state->_features_SLAM.size(), slam_n_new, slam_row_sum / std::max(1L, slam_n_new), slam_n_lost,
+                   slam_life_sum / std::max(1L, slam_n_lost));
+      }
+      slam_log_last = state->_timestamp;
+      slam_row_sum = slam_life_sum = 0.0;
+      slam_n_new = slam_n_lost = 0;
+    }
+  }
 
   // Fork: every 10 s, how far the SLAM features sit from the plane under the beam now. Their spread is the
   // terrain; a mean that grows means the map's scale or height drifts from the rangefinder's.

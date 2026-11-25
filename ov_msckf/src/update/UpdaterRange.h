@@ -69,18 +69,13 @@ public:
    */
   bool reading_is_outlier(std::shared_ptr<State> state, double clone_time, double range) const;
 
-  /// Largest distance between the clones the feature is seen from, over its distance from the newest one
-  double parallax(std::shared_ptr<State> state, const std::unordered_map<size_t, std::vector<double>> &timestamps,
-                  const Eigen::Vector3d &p_FinG) const;
-
   /**
    * @brief The range row of a feature at p_FinG (global), seen at the given times.
    *
-   * False (no row) if there is no valid reading, the clone is not in Hx_order, the beam is too tilted or too low,
-   * or, with gates, the feature's parallax is below min_parallax.
+   * False (no row) if there is no valid reading, the clone is not in Hx_order, or the beam is too tilted or too low.
    */
   bool compute_row(std::shared_ptr<State> state, const std::unordered_map<size_t, std::vector<double>> &timestamps,
-                   const Eigen::Vector3d &p_FinG, const std::vector<std::shared_ptr<ov_type::Type>> &Hx_order, bool gates, Row &row);
+                   const Eigen::Vector3d &p_FinG, const std::vector<std::shared_ptr<ov_type::Type>> &Hx_order, Row &row);
 
   /**
    * @brief Append a range row to a feature's system, whitened to sigma_pix, with standard deviation
@@ -97,7 +92,6 @@ public:
 
   /// Counters for the periodic log
   long n_missing = 0;        // no valid reading for the feature
-  long n_low_parallax = 0;   // rows skipped by min_parallax
   long n_slam_full = 0;      // SLAM features created from all their observations plus the range row
   long n_slam_plane = 0;     // SLAM features created on the plane from one bearing and the range
 
