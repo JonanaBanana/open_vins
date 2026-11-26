@@ -23,6 +23,7 @@
 #define OV_MSCKF_UPDATER_HELPER_H
 
 #include <Eigen/Eigen>
+#include <map>
 #include <memory>
 #include <unordered_map>
 
@@ -124,6 +125,14 @@ public:
    * @param res Measurement residual
    */
   static void nullspace_project_inplace(Eigen::MatrixXd &H_f, Eigen::MatrixXd &H_x, Eigen::VectorXd &res);
+
+  /**
+   * @brief RATE (experimental): whiten a feature's rows (as built by get_feature_jacobian_full) for a pixel noise
+   * that grows with the angular rate at each observation, sigma_i^2 = sigma^2 + (per_rate |w_i|)^2, back to sigma.
+   * rates: angular rate [rad/s] by clone time (camera clock); observations without one are left as they are.
+   */
+  static void weight_by_rate(const UpdaterHelperFeature &feature, const std::map<double, double> &rates, double sigma, double per_rate,
+                             Eigen::MatrixXd &H_f, Eigen::MatrixXd &H_x, Eigen::VectorXd &res);
 
   /**
    * @brief This will perform measurement compression

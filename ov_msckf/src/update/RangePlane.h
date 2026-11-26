@@ -93,6 +93,17 @@ struct RangeOptions {
   /// Time offset of the range stamps (range0: time_offset): t_imu = t_range + time_offset [s]
   double time_offset = 0.0;
 
+  /// PLANESTATE (experimental): the ground height is a state variable updated by the readings, and the features'
+  /// range rows become point-on-plane rows against it (feature z minus ground height, sigma). Off: each row uses
+  /// the height from one reading.
+  bool plane_state = false;
+  /// PLANESTATE: standard deviation of one reading's ground height (range noise, footprint) [m]
+  double reading_sigma = 2.0;
+  /// PLANESTATE: standard deviation of the reading's timing [s]; adds |dh/dtilt| * |w| * timing_sigma to its noise
+  double timing_sigma = 0.01;
+  /// PLANESTATE: how fast the ground height may change along the track [m per sqrt(m) travelled]
+  double terrain_sigma = 0.05;
+
   void print_and_load(const std::shared_ptr<ov_core::YamlParser> &parser = nullptr) {
     if (parser != nullptr) {
       parser->parse_config("use_range", enabled, false);
@@ -132,6 +143,10 @@ struct RangeOptions {
       parser->parse_config("range_max_tilt_deg", max_tilt_deg, false);
       parser->parse_config("range_max_gap", max_gap, false);
       parser->parse_config("range_min_height", min_height, false);
+      parser->parse_config("range_plane_state", plane_state, false);
+      parser->parse_config("range_reading_sigma", reading_sigma, false);
+      parser->parse_config("range_timing_sigma", timing_sigma, false);
+      parser->parse_config("range_terrain_sigma", terrain_sigma, false);
     }
     if (!enabled) {
       PRINT_INFO("RANGE PLANE: off\n");
@@ -141,6 +156,9 @@ struct RangeOptions {
                "beam [%.2f %.2f %.2f] from [%.3f %.3f %.3f] m in the IMU frame, time offset %.4f s\n",
                topic.c_str(), msg_type.c_str(), sigma, sigma_shared, min, max, max_tilt_deg, min_height, dir_in_imu(0), dir_in_imu(1),
                dir_in_imu(2), p_in_imu(0), p_in_imu(1), p_in_imu(2), time_offset);
+    if (plane_state)
+      PRINT_INFO("RANGE PLANE: ground height as a state (experimental): reading sigma %.2f m, timing sigma %.3f s, terrain %.3f m/sqrt(m)\n",
+                 reading_sigma, timing_sigma, terrain_sigma);
     PRINT_INFO("RANGE PLANE: SLAM features from the range %s; outlier readings %s\n", slam_init ? "on" : "off",
                outlier_max_dev > 0.0 ? ("beyond " + std::to_string(outlier_max_dev).substr(0, 4) + " m from the window's median").c_str()
                                      : "kept");

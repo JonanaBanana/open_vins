@@ -104,9 +104,13 @@ bool UpdaterRange::compute_row(std::shared_ptr<State> state, const std::unordere
     n_missing++;
     return false;
   }
-  std::shared_ptr<PoseJPL> clone = state->_clones_IMU.at(clone_time);
-  if (column_of(Hx_order, clone) < 0)
+  if (column_of(Hx_order, state->_clones_IMU.at(clone_time)) < 0)
     return false;
+  return row_at(state, clone_time, range, p_FinG(2), row);
+}
+
+bool UpdaterRange::row_at(std::shared_ptr<State> state, double clone_time, double range, double z_plane, Row &row) const {
+  std::shared_ptr<PoseJPL> clone = state->_clones_IMU.at(clone_time);
 
   // Beam in the global frame (z up): b = R_GtoI^T d, so b_z = d . (R_GtoI e_z). The beam starts at the
   // rangefinder, p_S = p_I + R_GtoI^T l (l: its position in the IMU frame), so its height above the
@@ -115,7 +119,7 @@ bool UpdaterRange::compute_row(std::shared_ptr<State> state, const std::unordere
   const Eigen::Vector3d &d = _options.dir_in_imu;
   const Eigen::Vector3d &l = _options.p_in_imu;
   const double b_z = d.dot(clone->Rot().col(2));
-  const double height = clone->pos()(2) + l.dot(clone->Rot().col(2)) - p_FinG(2);
+  const double height = clone->pos()(2) + l.dot(clone->Rot().col(2)) - z_plane;
   if (-b_z < std::cos(_options.max_tilt_deg * M_PI / 180.0) || height <= 0.0 || range * -b_z < _options.min_height) {
     return false;
   }
@@ -129,7 +133,7 @@ bool UpdaterRange::compute_row(std::shared_ptr<State> state, const std::unordere
   const Eigen::Vector3d p_lin = state->_options.do_fej ? clone->pos_fej() : clone->pos();
   const Eigen::Matrix3d c_skew = skew_x(R_lin.col(2));
   const double b_z_lin = d.dot(R_lin.col(2));
-  const double height_lin = p_lin(2) + l.dot(R_lin.col(2)) - p_FinG(2);
+  const double height_lin = p_lin(2) + l.dot(R_lin.col(2)) - z_plane;
   row.clone_time = clone_time;
   row.clone = clone;
   row.range = range;
@@ -138,6 +142,102 @@ bool UpdaterRange::compute_row(std::shared_ptr<State> state, const std::unordere
   row.dh_dpfz = 1.0 / b_z_lin;
   row.cos_tilt = -b_z;
   return true;
+}
+
+bool UpdaterRange::ground_ready(std::shared_ptr<State> state) const { return _options.plane_state && state->_ground != nullptr; }
+
+bool UpdaterRange::ground_row(std::shared_ptr<State> state, const Eigen::Vector3d &p_FinG, Row &row) const {
+  if (!ground_ready(state))
+    return false;
+  // Not near the ground (take-off, landing)
+  const double d = state->_ground->value()(0);
+  if (state->_imu->pos()(2) - d < _options.min_height)
+    return false;
+  row = Row();
+  row.residual = d - p_FinG(2);  // measured 0 = p_F,z - d
+  row.dh_dpfz = 1.0;
+  row.ground = state->_ground;
+  row.dh_dground = -1.0;
+  row.cos_tilt = 1.0;
+  return true;
+}
+
+void UpdaterRange::update_ground(std::shared_ptr<State> state, double clone_time, double rate) {
+  if (!_options.plane_state || state->_clones_IMU.find(clone_time) == state->_clones_IMU.end())
+    return;
+  const double dt_cam_to_imu = state->_calib_dt_CAMtoIMU->value()(0);
+  double range = 0.0, z_reading = 0.0;
+  if (!_buffer->get(clone_time + dt_cam_to_imu, range) || !plane_height(state, clone_time, range, z_reading))
+    return;
+  std::shared_ptr<PoseJPL> clone = state->_clones_IMU.at(clone_time);
+
+  // First reading: the ground is where it says, with the reading's noise and the clone's uncertainty
+  if (state->_ground == nullptr) {
+    Row row;
+    if (!row_at(state, clone_time, range, z_reading, row))
+      return;
+    auto ground = std::make_shared<Vec>(1);
+    ground->set_value(Eigen::VectorXd::Constant(1, z_reading));
+    ground->set_fej(Eigen::VectorXd::Constant(1, z_reading));
+    Eigen::MatrixXd H_R = Eigen::MatrixXd::Zero(1, 6), H_L(1, 1), R(1, 1);
+    H_R.block(0, 0, 1, 3) = row.dh_dtheta;
+    H_R(0, 5) = row.dh_dpz;
+    H_L(0, 0) = row.dh_dpfz;  // the plane height enters as the feature's z did
+    R(0, 0) = _options.reading_sigma * _options.reading_sigma;
+    Eigen::VectorXd res = Eigen::VectorXd::Constant(1, row.residual);
+    StateHelper::initialize_invertible(state, ground, {clone}, H_R, H_L, R, res);
+    state->_ground = ground;
+    _ground_last_time = clone_time;
+    _ground_last_xy = clone->pos().head(2);
+    PRINT_INFO("[GROUND] initialised at %.2f m (sigma %.2f m)\n", ground->value()(0),
+               std::sqrt(StateHelper::get_marginal_covariance(state, {ground})(0, 0)));
+    return;
+  }
+
+  // Terrain noise for the horizontal distance travelled since the last update
+  std::shared_ptr<Vec> ground = state->_ground;
+  const double dist = (clone->pos().head(2) - _ground_last_xy).norm();
+  state->_Cov(ground->id(), ground->id()) += _options.terrain_sigma * _options.terrain_sigma * dist;
+  _ground_last_time = clone_time;
+  _ground_last_xy = clone->pos().head(2);
+
+  // The reading against the ground height
+  Row row;
+  if (!row_at(state, clone_time, range, ground->value()(0), row))
+    return;
+  Eigen::MatrixXd H = Eigen::MatrixXd::Zero(1, 7);
+  H.block(0, 0, 1, 3) = row.dh_dtheta;
+  H(0, 5) = row.dh_dpz;
+  H(0, 6) = row.dh_dpfz;  // w.r.t. the ground height
+  std::vector<std::shared_ptr<Type>> H_order = {clone, ground};
+  // Noise: the reading's, plus its timing error at the current angular rate (the beam tilts by w dt)
+  double var = _options.reading_sigma * _options.reading_sigma;
+  if (rate > 0.0 && _options.timing_sigma > 0.0) {
+    const double s = row.dh_dtheta.norm() * rate * _options.timing_sigma;
+    var += s * s;
+  }
+  // Gate: reject a reading that is both statistically (4 sigma of the innovation) and absolutely (outlier_max_dev)
+  // far from the prediction; otherwise bound its influence (Huber)
+  const Eigen::MatrixXd P = StateHelper::get_marginal_covariance(state, H_order);
+  const double S = (H * P * H.transpose())(0, 0) + var;
+  const double r = row.residual;
+  if (r * r > 16.0 * S && (_options.outlier_max_dev <= 0.0 || std::abs(r) > _options.outlier_max_dev)) {
+    _ground_rejected++;
+    return;
+  }
+  if (std::abs(r) > _options.huber_k * std::sqrt(S))
+    var += (r * r / (_options.huber_k * _options.huber_k)) - S;
+  Eigen::MatrixXd R = Eigen::MatrixXd::Constant(1, 1, var);
+  Eigen::VectorXd res = Eigen::VectorXd::Constant(1, r);
+  StateHelper::EKFUpdate(state, H_order, H, res, R);
+  _ground_used++;
+
+  if (_ground_log_time < 0 || clone_time - _ground_log_time > 10.0) {
+    _ground_log_time = clone_time;
+    PRINT_INFO("[GROUND] height %.2f m (sigma %.2f m), vehicle %.1f m above; readings used %ld, rejected %ld\n", ground->value()(0),
+               std::sqrt(StateHelper::get_marginal_covariance(state, {ground})(0, 0)), clone->pos()(2) - ground->value()(0), _ground_used,
+               _ground_rejected);
+  }
 }
 
 void UpdaterRange::append_row(const Row &row, int n_shared, double sigma_pix, const std::vector<std::shared_ptr<Type>> &Hx_order,
@@ -161,11 +261,19 @@ void UpdaterRange::append_row(const Row &row, int n_shared, double sigma_pix, co
   H_f.row(n).setZero();
   res.conservativeResize(n + 1);
 
-  // The clone the reading is at: orientation (3) then position (3)
-  const int col = column_of(Hx_order, row.clone);
-  assert(col >= 0);
-  H_x.block(n, col, 1, 3) += w * row.dh_dtheta;
-  H_x(n, col + 5) += w * row.dh_dpz;
+  // The clone the reading is at: orientation (3) then position (3) (PLANESTATE point-on-plane rows have none)
+  if (row.clone != nullptr) {
+    const int col = column_of(Hx_order, row.clone);
+    assert(col >= 0);
+    H_x.block(n, col, 1, 3) += w * row.dh_dtheta;
+    H_x(n, col + 5) += w * row.dh_dpz;
+  }
+  // PLANESTATE: the ground height
+  if (row.ground != nullptr) {
+    const int col = column_of(Hx_order, row.ground);
+    assert(col >= 0);
+    H_x(n, col) += w * row.dh_dground;
+  }
 
   // The feature: d h / d p_FinG = [0 0 dh_dpfz], chained through its representation
   H_f.row(n) = w * row.dh_dpfz * dpfg_dlambda.row(2);

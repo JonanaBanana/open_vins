@@ -423,6 +423,25 @@ void UpdaterHelper::get_feature_jacobian_full(std::shared_ptr<State> state, Upda
   }
 }
 
+void UpdaterHelper::weight_by_rate(const UpdaterHelperFeature &feature, const std::map<double, double> &rates, double sigma,
+                                   double per_rate, Eigen::MatrixXd &H_f, Eigen::MatrixXd &H_x, Eigen::VectorXd &res) {
+  // Same order as get_feature_jacobian_full: cameras, then measurements, two rows each
+  int c = 0;
+  for (auto const &pair : feature.timestamps) {
+    for (double t : pair.second) {
+      auto it = rates.find(t);
+      if (it != rates.end()) {
+        const double s = per_rate * it->second;
+        const double w = sigma / std::sqrt(sigma * sigma + s * s);
+        H_f.middleRows(2 * c, 2) *= w;
+        H_x.middleRows(2 * c, 2) *= w;
+        res.segment(2 * c, 2) *= w;
+      }
+      c++;
+    }
+  }
+}
+
 void UpdaterHelper::nullspace_project_inplace(Eigen::MatrixXd &H_f, Eigen::MatrixXd &H_x, Eigen::VectorXd &res) {
 
   // Apply the left nullspace of H_f to all variables

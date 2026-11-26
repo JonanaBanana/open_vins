@@ -89,6 +89,13 @@ public:
    */
   void set_range(std::shared_ptr<UpdaterRange> range) { _range = range; }
 
+  /// RATE (experimental): angular rate [rad/s] by clone time, for the rate-dependent pixel noise
+  void set_rates(std::shared_ptr<std::map<double, double>> rates) { _rates = rates; }
+  std::shared_ptr<std::map<double, double>> _rates;
+
+  /// DIAG (temporary): last update's SLAM features offered and chi2-rejected
+  int diag_in = 0, diag_chi2 = 0;
+
   /**
    * @brief Will change SLAM feature anchors if it will be marginalized
    *

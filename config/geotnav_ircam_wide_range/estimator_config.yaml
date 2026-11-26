@@ -122,6 +122,11 @@ up_slam_sigma_px: 1.5
 up_slam_chi2_multipler: 2.5
 up_aruco_sigma_px: 1
 up_aruco_chi2_multipler: 1
+# Experimental. Pixel noise growing with the angular rate at each observation (motion blur):
+# sigma^2 = sigma_px^2 + (k |w|)^2, k in px per rad/s (MSCKF and SLAM); 0: off.
+up_sigma_px_per_rate: 4.0
+# Experimental. MSCKF features seen only twice are dropped if either observation is above this rate [deg/s]; 0: off.
+up_fast_rate_deg: 60
 
 relative_config_imu: "kalibr_imu_chain.yaml"
 relative_config_imucam: "kalibr_imucam_chain.yaml"
@@ -143,3 +148,9 @@ range_max_gap: 0.1             # [s] between the two readings interpolated at a 
 range_min_height: 5.0          # [m] no rows below (take-off, landing: features too close)
 range_slam_init: true          # create SLAM features with the range (on the plane when parallax is low)
 range_outlier_max_dev: 5.0     # [m] drop a reading whose ground height is this far from the window's median (tree, roof); 0: off
+# Experimental. Ground height as a state variable, updated by every reading; the features' range rows become
+# point-on-plane rows against it (feature z minus ground height, range_sigma). Off: each row uses one reading.
+range_plane_state: true
+range_reading_sigma: 2.0       # [m] one reading's ground height (range noise, footprint)
+range_timing_sigma: 0.01       # [s] reading timing; adds |dh/dtilt| * angular rate * this to its noise
+range_terrain_sigma: 0.05      # [m per sqrt(m)] how fast the ground height may change along the track

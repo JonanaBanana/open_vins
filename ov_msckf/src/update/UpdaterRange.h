@@ -49,6 +49,8 @@ public:
     double dh_dpz = 0.0;           // w.r.t. the clone's z position
     double dh_dpfz = 0.0;          // w.r.t. the feature's global z position
     double cos_tilt = 1.0;         // beam's tilt from vertical
+    std::shared_ptr<ov_type::Type> ground;  // PLANESTATE: the ground height state (null: none)
+    double dh_dground = 0.0;                // PLANESTATE: w.r.t. the ground height
   };
 
   const RangeOptions &options() const { return _options; }
@@ -77,6 +79,28 @@ public:
   bool compute_row(std::shared_ptr<State> state, const std::unordered_map<size_t, std::vector<double>> &timestamps,
                    const Eigen::Vector3d &p_FinG, const std::vector<std::shared_ptr<ov_type::Type>> &Hx_order, Row &row);
 
+  /// The slant range row of one reading at a clone against the horizontal plane at height z_plane; false if the
+  /// beam is too tilted or too low, or the plane is not below the beam
+  bool row_at(std::shared_ptr<State> state, double clone_time, double range, double z_plane, Row &row) const;
+
+  /// PLANESTATE: whether the ground height is a state variable, and whether it has been initialised
+  bool plane_state() const { return _options.plane_state; }
+  bool ground_ready(std::shared_ptr<State> state) const;
+
+  /**
+   * @brief PLANESTATE: a feature's point-on-plane row against the ground height state: residual d - p_F,z,
+   * dh_dpfz 1, dh_dground -1, no clone. Its noise is sigma (append_row with n_shared 0). False if the ground is not
+   * initialised or the vehicle is below min_height above it.
+   */
+  bool ground_row(std::shared_ptr<State> state, const Eigen::Vector3d &p_FinG, Row &row) const;
+
+  /**
+   * @brief PLANESTATE: at a new clone, initialise the ground height from its reading, or add the terrain noise for
+   * the distance travelled and update the ground height (and the state) with the reading. rate: angular rate at the
+   * clone [rad/s] (timing noise), negative if unknown.
+   */
+  void update_ground(std::shared_ptr<State> state, double clone_time, double rate);
+
   /**
    * @brief Append a range row to a feature's system, whitened to sigma_pix, with standard deviation
    * sqrt(sigma^2 + n_shared sigma_shared^2) and a Huber-type clamp beyond huber_k of it.
@@ -101,6 +125,12 @@ private:
 
   std::shared_ptr<RangeBuffer> _buffer;
   RangeOptions _options;
+
+  /// PLANESTATE: time and horizontal position of the last ground update (terrain noise), and counters
+  double _ground_last_time = -1.0;
+  Eigen::Vector2d _ground_last_xy = Eigen::Vector2d::Zero();
+  long _ground_used = 0, _ground_rejected = 0;
+  double _ground_log_time = -1.0;
 
   /// Clone times whose reading was rejected as an outlier (each counted once; pruned with the window)
   mutable std::set<double> _rejected;

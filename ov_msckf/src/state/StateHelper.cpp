@@ -109,6 +109,10 @@ void StateHelper::EKFPropagation(std::shared_ptr<State> state, const std::vector
     }
   }
   if (found_neg) {
+    // DIAG (temporary): flush before exiting so the warning above reaches a redirected log
+    PRINT_ERROR(RED "[DIAG-COV] EKFPropagation broke the covariance: diag %.3g..%.3g\n" RESET, diags.minCoeff(), diags.maxCoeff());
+    std::fflush(stdout);
+    std::fflush(stderr);
     std::exit(EXIT_FAILURE);
   }
 }
@@ -178,6 +182,36 @@ void StateHelper::EKFUpdate(std::shared_ptr<State> state, const std::vector<std:
     }
   }
   if (found_neg) {
+    // DIAG (temporary): why the covariance broke, recomputed here only (the normal path is unchanged), and flushed
+    // before exiting (stdout is buffered when redirected, and the shutdown can crash before it is written)
+    {
+      Eigen::LLT<Eigen::MatrixXd> llt_check(S.selfadjointView<Eigen::Upper>());
+      const Eigen::VectorXd Ld = Eigen::MatrixXd(llt_check.matrixL()).diagonal();
+      const double cond_S = (llt_check.info() == Eigen::Success && Ld.minCoeff() > 0) ? std::pow(Ld.maxCoeff() / Ld.minCoeff(), 2) : -1.0;
+      Eigen::VectorXd Pd = state->_Cov.diagonal();
+      Eigen::Index i_min, i_max;
+      const double d_min = Pd.minCoeff(&i_min), d_max = Pd.maxCoeff(&i_max);
+      double h_min = 1e300;
+      for (int r = 0; r < H.rows(); r++)
+        for (int c = 0; c < H.cols(); c++)
+          if (H(r, c) != 0.0)
+            h_min = std::min(h_min, std::abs(H(r, c)));
+      Eigen::VectorXd Sd = S.diagonal();
+      PRINT_ERROR(RED "[DIAG-COV] EKFUpdate broke the covariance: %d rows, %d state dims; S llt %s, cond(S) %.3g, "
+                      "S diag %.3g..%.3g; |H| %.3g..%.3g; |res| max %.3g; Cov diag after update %.3g (idx %d) .. %.3g (idx %d); "
+                      "|K| max %.3g\n" RESET,
+                  (int)res.rows(), (int)state->_Cov.rows(), llt_check.info() == Eigen::Success ? "ok" : "FAILED", cond_S, Sd.minCoeff(),
+                  Sd.maxCoeff(), h_min, H.cwiseAbs().maxCoeff(), res.cwiseAbs().maxCoeff(), d_min, (int)i_min, d_max, (int)i_max,
+                  K.cwiseAbs().maxCoeff());
+      for (const auto &var : state->_variables) {
+        const Eigen::VectorXd vd = Pd.segment(var->id(), var->size());
+        if (vd.minCoeff() < 0.0 || vd.maxCoeff() > 1e4)
+          PRINT_ERROR(RED "[DIAG-COV]   variable at %d (size %d): diag %.3g..%.3g\n" RESET, var->id(), var->size(), vd.minCoeff(),
+                      vd.maxCoeff());
+      }
+      std::fflush(stdout);
+      std::fflush(stderr);
+    }
     std::exit(EXIT_FAILURE);
   }
 

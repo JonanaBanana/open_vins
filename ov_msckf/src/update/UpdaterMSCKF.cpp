@@ -89,8 +89,20 @@ void UpdaterMSCKF::update(std::shared_ptr<State> state, std::vector<std::shared_
       ct_meas += (*it0)->timestamps[pair.first].size();
     }
 
+    // RATE (experimental): a feature seen only twice, at least once while rotating fast, is dropped
+    bool fast_pair = false;
+    if (ct_meas == 2 && _options.fast_rate > 0.0 && _rates != nullptr) {
+      for (const auto &pair : (*it0)->timestamps) {
+        for (double t : pair.second) {
+          auto r = _rates->find(t);
+          if (r != _rates->end() && r->second > _options.fast_rate)
+            fast_pair = true;
+        }
+      }
+    }
+
     // Remove if we don't have enough
-    if (ct_meas < 2) {
+    if (ct_meas < 2 || fast_pair) {
       (*it0)->to_delete = true;
       it0 = feature_vec.erase(it0);
     } else {
@@ -99,6 +111,23 @@ void UpdaterMSCKF::update(std::shared_ptr<State> state, std::vector<std::shared_
   }
   rT1 = boost::posix_time::microsec_clock::local_time();
   last_stats.in = (int)feature_vec.size();
+  // DIAG (temporary): track lengths
+  for (const auto &f : feature_vec) {
+    double t_min = 1e300, t_max = -1e300;
+    for (const auto &pair : f->timestamps) {
+      last_stats.meas_mean += pair.second.size();
+      for (double t : pair.second) {
+        t_min = std::min(t_min, t);
+        t_max = std::max(t_max, t);
+      }
+    }
+    last_stats.span_mean += t_max - t_min;
+  }
+  if (!feature_vec.empty()) {
+    last_stats.meas_mean /= feature_vec.size();
+    last_stats.span_mean /= feature_vec.size();
+  }
+  std::vector<double> diag_ratios, diag_chi2;
 
   // 2. Create vector of cloned *CAMERA* poses at each of our clone timesteps
   std::unordered_map<size_t, std::unordered_map<double, FeatureInitializer::ClonePose>> clones_cam;
@@ -136,6 +165,34 @@ void UpdaterMSCKF::update(std::shared_ptr<State> state, std::vector<std::shared_
     bool success_refine = true;
     if (initializer_feat->config().refine_features) {
       success_refine = initializer_feat->single_gaussnewton(*it1, clones_cam);
+    }
+
+    // DIAG (temporary): classify failures; after single_gaussnewton, p_FinA holds the refined estimate
+    if (!success_tri) {
+      last_stats.fail_lin++;
+    } else if (initializer_feat->config().refine_features) {
+      const auto &f = *it1;
+      auto &anchor = clones_cam.at(f->anchor_cam_id).at(f->anchor_clone_timestamp);
+      const double dist = f->p_FinA.norm();
+      double base_max = 0.0;
+      if (std::isfinite(dist) && dist > 0) {
+        const Eigen::Vector3d ray = f->p_FinA / dist;
+        for (const auto &pair : f->timestamps) {
+          for (double t : pair.second) {
+            const Eigen::Vector3d p = anchor.Rot() * (clones_cam.at(pair.first).at(t).pos() - anchor.pos());
+            base_max = std::max(base_max, (p - p.dot(ray) * ray).norm());
+          }
+        }
+      }
+      const double ratio = base_max > 0 ? dist / base_max : 1e9;
+      diag_ratios.push_back(ratio);
+      if (!success_refine) {
+        const auto &o = initializer_feat->config();
+        if (!std::isfinite(dist) || f->p_FinA(2) < o.min_dist || f->p_FinA(2) > o.max_dist)
+          last_stats.fail_depth++;
+        else
+          last_stats.fail_ratio++;
+      }
     }
 
     // Remove the feature if not a success
@@ -240,6 +297,9 @@ void UpdaterMSCKF::update(std::shared_ptr<State> state, std::vector<std::shared_
 
     // Get the Jacobian for this feature
     UpdaterHelper::get_feature_jacobian_full(state, feat, H_f, H_x, res, Hx_order);
+    // RATE (experimental): pixel noise growing with the angular rate, whitened back to sigma_pix
+    if (_options.sigma_pix_per_rate > 0.0 && _rates != nullptr)
+      UpdaterHelper::weight_by_rate(feat, *_rates, _options.sigma_pix, _options.sigma_pix_per_rate, H_f, H_x, res);
 
     // Fork: keep the unprojected system for the range row, which is added only after the visual rows
     // pass the chi2 test below (so a wrong scale cannot make every feature fail it).
@@ -272,7 +332,9 @@ void UpdaterMSCKF::update(std::shared_ptr<State> state, std::vector<std::shared_
     }
 
     // Check if we should delete or not
+    diag_chi2.push_back(chi2 / (_options.chi2_multipler * chi2_check));  // DIAG (temporary)
     if (chi2 > _options.chi2_multipler * chi2_check) {
+      last_stats.fail_chi2++;  // DIAG (temporary)
       (*it2)->to_delete = true;
       it2 = feature_vec.erase(it2);
       // PRINT_DEBUG("featid = %d\n", feat.featid);
@@ -285,7 +347,18 @@ void UpdaterMSCKF::update(std::shared_ptr<State> state, std::vector<std::shared_
 
     // Fork: the visual rows passed; if the feature has a range row, keep its unprojected system for later.
     UpdaterRange::Row row;
-    if (use_range && _range->compute_row(state, (*it2)->timestamps, (*it2)->p_FinG, Hx_order, row)) {
+    if (use_range && _range->plane_state()) {
+      // PLANESTATE: point-on-plane row against the ground height state (added to the feature's variables)
+      if (_range->ground_row(state, (*it2)->p_FinG, row)) {
+        std::vector<std::shared_ptr<Type>> Hx_order_g = Hx_order;
+        Hx_order_g.push_back(row.ground);
+        H_x_full.conservativeResize(Eigen::NoChange, H_x_full.cols() + 1);
+        H_x_full.col(H_x_full.cols() - 1).setZero();
+        range_features.push_back({H_f_full, H_x_full, res_full, Hx_order_g, row});
+        it2++;
+        continue;
+      }
+    } else if (use_range && _range->compute_row(state, (*it2)->timestamps, (*it2)->p_FinG, Hx_order, row)) {
       range_features.push_back({H_f_full, H_x_full, res_full, Hx_order, row});
       it2++;
       continue;
@@ -301,10 +374,12 @@ void UpdaterMSCKF::update(std::shared_ptr<State> state, std::vector<std::shared_
   if (!range_features.empty()) {
     std::map<double, int> n_per_reading;
     for (const auto &rf : range_features) {
-      n_per_reading[rf.row.clone_time]++;
+      if (rf.row.clone != nullptr)
+        n_per_reading[rf.row.clone_time]++;
     }
     for (auto &rf : range_features) {
-      const int n_shared = n_per_reading.at(rf.row.clone_time);
+      // PLANESTATE rows use no reading: their noise is sigma alone (the ground's uncertainty is in the state)
+      const int n_shared = (rf.row.clone != nullptr) ? n_per_reading.at(rf.row.clone_time) : 0;
       _range->append_row(rf.row, n_shared, _options.sigma_pix, rf.Hx_order, Eigen::Matrix3d::Identity(), {}, {}, rf.H_f, rf.H_x, rf.res);
       UpdaterHelper::nullspace_project_inplace(rf.H_f, rf.H_x, rf.res);
       append_to_big(rf.H_x, rf.res, rf.Hx_order);
@@ -312,6 +387,15 @@ void UpdaterMSCKF::update(std::shared_ptr<State> state, std::vector<std::shared_
   }
   rT3 = boost::posix_time::microsec_clock::local_time();
   last_stats.used = (int)feature_vec.size();
+  // DIAG (temporary): medians
+  auto median = [](std::vector<double> v) {
+    if (v.empty())
+      return -1.0;
+    std::nth_element(v.begin(), v.begin() + v.size() / 2, v.end());
+    return v[v.size() / 2];
+  };
+  last_stats.chi2_ratio_med = median(diag_chi2);
+  last_stats.ratio_med = median(diag_ratios);
 
   // We have appended all features to our Hx_big, res_big
   // Delete it so we do not reuse information

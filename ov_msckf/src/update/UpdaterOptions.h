@@ -40,6 +40,14 @@ struct UpdaterOptions {
   /// Covariance for our raw pixel measurements
   double sigma_pix_sq = 1;
 
+  /// RATE (experimental): pixel noise growing with the angular rate at the observation (motion blur):
+  /// sigma^2 = sigma_pix^2 + (sigma_pix_per_rate |w|)^2 [px per rad/s]; 0: off
+  double sigma_pix_per_rate = 0.0;
+
+  /// RATE (experimental): MSCKF features seen only twice are dropped if either observation is above this
+  /// angular rate [rad/s]; 0: off
+  double fast_rate = 0.0;
+
   /// Nice print function of what parameters we have loaded
   void print() {
     PRINT_DEBUG("    - chi2_multipler: %.1f\n", chi2_multipler);

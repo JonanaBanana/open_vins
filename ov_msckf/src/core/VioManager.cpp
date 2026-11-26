@@ -193,6 +193,13 @@ VioManager::VioManager(VioManagerOptions &params_) : thread_init_running(false),
   if (range_updater != nullptr && params.range_options.slam_init) {
     updaterSLAM->set_range(range_updater);
   }
+  // RATE (experimental): angular rate at each clone, for the rate-dependent pixel noise
+  if (params.msckf_options.sigma_pix_per_rate > 0.0 || params.msckf_options.fast_rate > 0.0 ||
+      (range_updater != nullptr && params.range_options.plane_state)) {  // PLANESTATE uses it for the readings' timing noise
+    clone_rates = std::make_shared<std::map<double, double>>();
+    updaterMSCKF->set_rates(clone_rates);
+    updaterSLAM->set_rates(clone_rates);
+  }
 
   // If we are using zero velocity updates, then create the updater
   if (params.try_zupt) {
@@ -214,6 +221,14 @@ void VioManager::feed_measurement_imu(const ov_core::ImuData &message) {
     oldest_time = message.timestamp - params.init_options.init_window_time + state->_calib_dt_CAMtoIMU->value()(0) - 0.10;
   }
   propagator->feed_imu(message, oldest_time);
+
+  // RATE (experimental): keep the last second of gyro readings (fed from the IMU thread)
+  if (clone_rates != nullptr) {
+    std::lock_guard<std::mutex> lck(gyro_mtx);
+    gyro_hist.emplace_back(message.timestamp, message.wm);
+    while (!gyro_hist.empty() && gyro_hist.front().first < message.timestamp - 1.0)
+      gyro_hist.pop_front();
+  }
 
   // Push back to our initializer
   if (!is_initialized_vio) {
@@ -453,6 +468,37 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
   }
   if (use_recent_clones() && frame_is_keyframe && state->_clones_IMU.find(message.timestamp) != state->_clones_IMU.end())
     keyframe_times.insert(message.timestamp);
+
+  // RATE (experimental): mean angular rate (bias removed) within 20 ms of the new clone, in the IMU clock;
+  // forget clones that left the window
+  if (clone_rates != nullptr && state->_clones_IMU.find(message.timestamp) != state->_clones_IMU.end()) {
+    const double t_imu = message.timestamp + state->_calib_dt_CAMtoIMU->value()(0);
+    const Eigen::Vector3d bg = state->_imu->bias_g();
+    double sum = 0.0;
+    int n = 0;
+    {
+      std::lock_guard<std::mutex> lck(gyro_mtx);
+      for (const auto &g : gyro_hist) {
+        if (std::abs(g.first - t_imu) <= 0.02) {
+          sum += (g.second - bg).norm();
+          n++;
+        }
+      }
+    }
+    if (n > 0)
+      (*clone_rates)[message.timestamp] = sum / n;
+    const double oldest = state->_clones_IMU.begin()->first;
+    while (!clone_rates->empty() && clone_rates->begin()->first < oldest)
+      clone_rates->erase(clone_rates->begin());
+  }
+
+  // PLANESTATE (experimental): initialise or update the ground height with the reading at the new clone
+  if (range_updater != nullptr && params.range_options.plane_state && state->_clones_IMU.find(message.timestamp) != state->_clones_IMU.end()) {
+    double rate = -1.0;
+    if (clone_rates != nullptr && clone_rates->count(message.timestamp) > 0)
+      rate = clone_rates->at(message.timestamp);
+    range_updater->update_ground(state, message.timestamp, rate);
+  }
   rT3 = boost::posix_time::microsec_clock::local_time();
 
   // If we have not reached max clones, we should just return...
@@ -743,6 +789,8 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
   // NOTE: that we provide the option here to do a *sequential* update
   // NOTE: this will be a lot faster but won't be as accurate.
   std::vector<std::shared_ptr<Feature>> feats_slam_UPDATE_TEMP;
+  updaterSLAM->diag_in = 0;  // DIAG (temporary)
+  updaterSLAM->diag_chi2 = 0;
   while (!feats_slam_UPDATE.empty()) {
     // Get sub vector of the features we will update with
     std::vector<std::shared_ptr<Feature>> featsup_TEMP;
@@ -757,6 +805,16 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
   }
   feats_slam_UPDATE = feats_slam_UPDATE_TEMP;
   rT5 = boost::posix_time::microsec_clock::local_time();
+  // DIAG (temporary): why MSCKF features fail, SLAM chi2 rejections, time offset, velocity sigma
+  if (params.print_track_stats) {
+    const auto &s = updaterMSCKF->last_stats;
+    const Eigen::MatrixXd Pv = StateHelper::get_marginal_covariance(state, {state->_imu->v()});
+    PRINT_INFO("[DIAG] t %.3f msckf in %d fail lin %d depth %d ratio %d chi2 %d | meas %.1f span %.2f ratio_med %.1f chi2r_med %.2f | "
+               "slam in %d chi2 %d | dt %.4f | sv %.2f %.2f %.2f\n",
+               state->_timestamp, s.in, s.fail_lin, s.fail_depth, s.fail_ratio, s.fail_chi2, s.meas_mean, s.span_mean, s.ratio_med,
+               s.chi2_ratio_med, updaterSLAM->diag_in, updaterSLAM->diag_chi2, state->_calib_dt_CAMtoIMU->value()(0),
+               std::sqrt(Pv(0, 0)), std::sqrt(Pv(1, 1)), std::sqrt(Pv(2, 2)));
+  }
   updaterSLAM->delayed_init(state, feats_slam_DELAYED, slam_on_plane);
   slam_on_plane.clear();
   rT6 = boost::posix_time::microsec_clock::local_time();

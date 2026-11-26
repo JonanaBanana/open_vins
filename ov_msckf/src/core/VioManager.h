@@ -27,6 +27,7 @@
 #include <atomic>
 #include <boost/filesystem.hpp>
 #include <fstream>
+#include <deque>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -250,6 +251,12 @@ protected:
   /// Fork: ids of the SLAM features chosen in this update that were promoted early (slam_min_parallax); they are
   /// created on the plane from the range
   std::set<size_t> slam_on_plane;
+
+  /// RATE (experimental): angular rate [rad/s] by clone time, shared with the updaters (null: off), and the
+  /// last second of gyro readings it is computed from
+  std::shared_ptr<std::map<double, double>> clone_rates;
+  std::deque<std::pair<double, Eigen::Vector3d>> gyro_hist;
+  std::mutex gyro_mtx;
 
   /// Fork: SLAM feature statistics for the [SLAM] line (print_track_stats): creation time of each SLAM feature,
   /// and per log interval the features created (with their image row, 0 top to 1 bottom) and lost (with their life)

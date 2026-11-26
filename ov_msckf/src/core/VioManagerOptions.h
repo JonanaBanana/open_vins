@@ -236,6 +236,15 @@ struct VioManagerOptions {
       msckf_options.sigma_pix_sq = std::pow(msckf_options.sigma_pix, 2);
       slam_options.sigma_pix_sq = std::pow(slam_options.sigma_pix, 2);
       aruco_options.sigma_pix_sq = std::pow(aruco_options.sigma_pix, 2);
+      // RATE (experimental): rate-dependent pixel noise and fast short-track drop (see UpdaterOptions)
+      double per_rate = 0.0, fast_deg = 0.0;
+      parser->parse_config("up_sigma_px_per_rate", per_rate, false);
+      parser->parse_config("up_fast_rate_deg", fast_deg, false);
+      msckf_options.sigma_pix_per_rate = per_rate;
+      slam_options.sigma_pix_per_rate = per_rate;
+      msckf_options.fast_rate = fast_deg * M_PI / 180.0;
+      if (per_rate > 0.0 || fast_deg > 0.0)
+        PRINT_INFO("RATE: pixel noise +%.2f px per rad/s; MSCKF features seen twice dropped above %.0f deg/s\n", per_rate, fast_deg);
       parser->parse_config("zupt_chi2_multipler", zupt_options.chi2_multipler);
     }
     PRINT_DEBUG("  Updater MSCKF Feats:\n");

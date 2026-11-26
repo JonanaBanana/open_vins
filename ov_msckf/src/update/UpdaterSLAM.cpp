@@ -169,8 +169,22 @@ void UpdaterSLAM::delayed_init(std::shared_ptr<State> state, std::vector<std::sh
     const std::shared_ptr<Feature> &f = *it_plan;
     Mode m = Mode::UPSTREAM;
     double clone_time = -1.0, range = 0.0, z_plane = 0.0;
-    const bool has_plane = use_range_for(f) && _range->find_reading(state, f->timestamps, clone_time, range) &&
-                           _range->plane_height(state, clone_time, range, z_plane);
+    bool has_plane = false;
+    if (use_range_for(f) && _range->plane_state()) {
+      // PLANESTATE: the plane is the ground height state; place on it from the newest observation
+      Eigen::Vector3d p_dummy = Eigen::Vector3d::Zero();
+      UpdaterRange::Row row_check;
+      if (_range->ground_row(state, p_dummy, row_check)) {
+        z_plane = state->_ground->value()(0);
+        for (const auto &pair : f->timestamps)
+          for (double t : pair.second)
+            clone_time = std::max(clone_time, t);
+        has_plane = clone_time > 0.0;
+      }
+    } else {
+      has_plane = use_range_for(f) && _range->find_reading(state, f->timestamps, clone_time, range) &&
+                  _range->plane_height(state, clone_time, range, z_plane);
+    }
     if (has_plane) {
       if (triangulated.at(f->featid) && on_plane.count(f->featid) == 0) {
         m = Mode::FULL;
@@ -271,20 +285,31 @@ void UpdaterSLAM::delayed_init(std::shared_ptr<State> state, std::vector<std::sh
 
     // Get the Jacobian for this feature
     UpdaterHelper::get_feature_jacobian_full(state, feat, H_f, H_x, res, Hx_order);
+    // RATE (experimental): pixel noise growing with the angular rate, whitened back to sigma_pix
+    if (_options_slam.sigma_pix_per_rate > 0.0 && _rates != nullptr && (int)feat.featid >= state->_options.max_aruco_features)
+      UpdaterHelper::weight_by_rate(feat, *_rates, _options_slam.sigma_pix, _options_slam.sigma_pix_per_rate, H_f, H_x, res);
 
     // Fork: append the range row (PLANE: it was built on the plane from this one bearing). A PLANE feature that gets
     // no row cannot be initialised from one bearing.
     const Mode m = (mode.count(feat.featid) > 0) ? mode.at(feat.featid) : Mode::UPSTREAM;
     if (m != Mode::UPSTREAM) {
       UpdaterRange::Row row;
-      const bool has_row = _range->compute_row(state, feat.timestamps, (*it2)->p_FinG, Hx_order, row);
+      // PLANESTATE: point-on-plane row against the ground height state (added to the feature's variables)
+      const bool use_ground = _range->plane_state();
+      const bool has_row = use_ground ? _range->ground_row(state, (*it2)->p_FinG, row)
+                                      : _range->compute_row(state, feat.timestamps, (*it2)->p_FinG, Hx_order, row);
       if (has_row) {
         Eigen::MatrixXd dpfg_dlambda;
         std::vector<Eigen::MatrixXd> dpfg_dx;
         std::vector<std::shared_ptr<Type>> dpfg_dx_order;
         UpdaterHelper::get_feature_jacobian_representation(state, feat, dpfg_dlambda, dpfg_dx, dpfg_dx_order);
-        _range->append_row(row, n_per_reading.at(reading_time.at(feat.featid)), _options_slam.sigma_pix, Hx_order, dpfg_dlambda, dpfg_dx,
-                           dpfg_dx_order, H_f, H_x, res);
+        if (use_ground) {
+          Hx_order.push_back(row.ground);
+          H_x.conservativeResize(Eigen::NoChange, H_x.cols() + 1);
+          H_x.col(H_x.cols() - 1).setZero();
+        }
+        const int n_shared = use_ground ? 0 : n_per_reading.at(reading_time.at(feat.featid));
+        _range->append_row(row, n_shared, _options_slam.sigma_pix, Hx_order, dpfg_dlambda, dpfg_dx, dpfg_dx_order, H_f, H_x, res);
       } else if (m == Mode::PLANE) {
         (*it2)->to_delete = true;
         it2 = feature_vec.erase(it2);
@@ -486,6 +511,9 @@ void UpdaterSLAM::update(std::shared_ptr<State> state, std::vector<std::shared_p
 
     // Get the Jacobian for this feature
     UpdaterHelper::get_feature_jacobian_full(state, feat, H_f, H_x, res, Hx_order);
+    // RATE (experimental): pixel noise growing with the angular rate, whitened back to sigma_pix
+    if (_options_slam.sigma_pix_per_rate > 0.0 && _rates != nullptr && (int)feat.featid >= state->_options.max_aruco_features)
+      UpdaterHelper::weight_by_rate(feat, *_rates, _options_slam.sigma_pix, _options_slam.sigma_pix_per_rate, H_f, H_x, res);
 
     // Place Jacobians in one big Jacobian, since the landmark is already in our state vector
     Eigen::MatrixXd H_xf = H_x;
@@ -533,7 +561,9 @@ void UpdaterSLAM::update(std::shared_ptr<State> state, std::vector<std::shared_p
     // Check if we should delete or not
     double chi2_multipler =
         ((int)feat.featid < state->_options.max_aruco_features) ? _options_aruco.chi2_multipler : _options_slam.chi2_multipler;
+    diag_in++;  // DIAG (temporary)
     if (chi2 > chi2_multipler * chi2_check) {
+      diag_chi2++;  // DIAG (temporary)
       if ((int)feat.featid < state->_options.max_aruco_features) {
         PRINT_WARNING(YELLOW "[SLAM-UP]: rejecting aruco tag %d for chi2 thresh (%.3f > %.3f)\n" RESET, (int)feat.featid, chi2,
                       chi2_multipler * chi2_check);

@@ -152,6 +152,9 @@ public:
   /// Our current set of SLAM features (3d positions)
   std::unordered_map<size_t, std::shared_ptr<ov_type::Landmark>> _features_SLAM;
 
+  /// PLANESTATE (experimental): height of the horizontal ground plane in the global frame (null until initialised)
+  std::shared_ptr<ov_type::Vec> _ground;
+
   /// Time offset base IMU to camera (t_imu = t_cam + t_off)
   std::shared_ptr<ov_type::Vec> _calib_dt_CAMtoIMU;
 
@@ -184,6 +187,8 @@ private:
   // This will allow it to access the below functions which should normally not be called
   // This prevents a developer from thinking that the "insert clone" will actually correctly add it to the covariance
   friend class StateHelper;
+  // PLANESTATE (experimental): adds the terrain noise to the ground height's variance
+  friend class UpdaterRange;
 
   /// Covariance of all active variables
   Eigen::MatrixXd _Cov;

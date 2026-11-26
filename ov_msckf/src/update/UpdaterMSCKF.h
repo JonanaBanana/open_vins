@@ -82,17 +82,32 @@ public:
    */
   void set_range(std::shared_ptr<UpdaterRange> range) { _range = range; }
 
+  /// RATE (experimental): angular rate [rad/s] by clone time, for the rate-dependent pixel noise
+  void set_rates(std::shared_ptr<std::map<double, double>> rates) { _rates = rates; }
+
   /// Fork: how the last update's features fared (for the per-frame [TRACK] log line)
   struct Stats {
     int in = 0;            // features offered with at least two measurements
     int triangulated = 0;  // of those, triangulated and refined
     int used = 0;          // of those, passed the chi2 test and went into the update
+    // DIAG (temporary): why features failed, and their tracks
+    int fail_lin = 0;      // linear triangulation failed (condition number, depth, nan)
+    int fail_depth = 0;    // refined depth out of [min_dist, max_dist] or nan
+    int fail_ratio = 0;    // refined distance / baseline above max_baseline (low parallax)
+    int fail_chi2 = 0;     // failed the chi2 test
+    double chi2_ratio_med = 0.0;  // median chi2 / threshold of the triangulated features
+    double meas_mean = 0.0;       // mean measurements per offered feature
+    double span_mean = 0.0;       // mean time span [s] of the offered features
+    double ratio_med = 0.0;       // median distance / baseline of the refined features (pass or fail)
   };
   Stats last_stats;
 
 protected:
   /// Fork: the rangefinder plane constraint (null: off)
   std::shared_ptr<UpdaterRange> _range;
+
+  /// RATE (experimental): angular rate by clone time (null: none)
+  std::shared_ptr<std::map<double, double>> _rates;
 
   /// Options used during update
   UpdaterOptions _options;
